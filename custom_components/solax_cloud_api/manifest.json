@@ -1,12 +1,12 @@
 {
   "domain": "solax_cloud_api",
   "name": "SolaxCloud API",
-  "version": "1.0.0",
+  "codeowners": ["@Sturmi77"],
+  "config_flow": true,
   "documentation": "https://github.com/Sturmi77/solax-cloud-api-ha",
+  "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Sturmi77/solax-cloud-api-ha/issues",
   "requirements": [],
-  "config_flow": true,
-  "iot_class": "cloud_polling",
-  "codeowners": ["@Sturmi77"],
-  "single_config_entry": true
+  "single_config_entry": true,
+  "version": "1.0.0"
 }

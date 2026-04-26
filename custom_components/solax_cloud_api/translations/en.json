@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "SolaxCloud API",
-        "description": "Enter your SolaxCloud Developer Portal credentials. You can find these at https://developer.solaxcloud.com under your Application settings.",
+        "description": "Enter your SolaxCloud Developer Portal credentials. You can find these at [the Developer Portal]({developer_portal_url}) under your Application settings.",
         "data": {
           "client_id": "Client ID",
           "client_secret": "Client Secret",

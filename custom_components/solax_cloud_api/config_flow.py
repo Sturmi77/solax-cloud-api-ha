@@ -209,6 +209,9 @@ class SolaxCloudConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=STEP_USER_SCHEMA,
             errors=errors,
+            description_placeholders={
+                "developer_portal_url": "https://developer.solaxcloud.com"
+            },
         )
 
     # ── Re-auth flow ──────────────────────────────────────────────────────────
