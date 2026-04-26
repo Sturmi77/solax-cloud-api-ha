@@ -50,7 +50,23 @@ API_AUTH_SUCCESS_CODE = 0         # auth endpoint
 
 # EVC Control endpoints
 EVC_CONTROL_BASE_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc_control"
-EVC_CONTROL_WORK_MODE_URL = f"{EVC_CONTROL_BASE_URL}/set_evc_work_mode"
+EVC_CONTROL_WORK_MODE_URL  = f"{EVC_CONTROL_BASE_URL}/set_evc_work_mode"
+EVC_CONTROL_START_MODE_URL = f"{EVC_CONTROL_BASE_URL}/set_evc_start_mode"
+EVC_CONTROL_SCENE_URL      = f"{EVC_CONTROL_BASE_URL}/set_charge_scene"
+
+# EVC Start Mode
+EVC_START_MODE_TO_INT: dict[str, int] = {
+    "Plug & Charge": 0,
+    "Swipe Card":    1,
+    "APP":           2,
+}
+
+# EVC Charge Scene
+EVC_CHARGE_SCENE_TO_INT: dict[str, int] = {
+    "Home":     0,
+    "OCPP":     1,
+    "Standard": 2,
+}
 
 # Work mode: int → API value (same as EVC_WORKING_MODE_MAP keys)
 EVC_WORK_MODE_TO_INT: dict[str, int] = {

@@ -1,15 +1,16 @@
-"""Select platform for SolaxCloud API — EVC Work Mode control.
+"""Select platform for SolaxCloud API — EVC control entities.
 
-Allows the user to switch the EV Charger between Stop / Fast / ECO / Green
-directly from the HA UI or automations.
+Entities:
+  1. EvcWorkModeSelect    — Stop / Fast / ECO / Green
+     API: POST /openapi/v2/device/evc_control/set_evc_work_mode
 
-API: POST /openapi/v2/device/evc_control/set_evc_work_mode
-     {"snList": ["<sn>"], "workMode": <int>, "businessType": 1}
+  2. EvcStartModeSelect   — Plug & Charge / Swipe Card / APP
+     API: POST /openapi/v2/device/evc_control/set_evc_start_mode
 
-When switching to ECO or Green, the default currentGear from const.py is sent.
-Use the companion number entity (evc_charging_current) to change the gear after
-switching mode.
+  3. EvcChargeSceneSelect — Home / OCPP / Standard
+     API: POST /openapi/v2/device/evc_control/set_charge_scene
 
+All entities reuse coordinator.async_send_evc_command() for token management.
 See ARCHITECTURE.md §8 for design rationale.
 """
 
@@ -28,9 +29,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_EVC_SN,
     DOMAIN,
+    EVC_CHARGE_SCENE_TO_INT,
+    EVC_CONTROL_SCENE_URL,
+    EVC_CONTROL_START_MODE_URL,
     EVC_CONTROL_WORK_MODE_URL,
-    EVC_CURRENT_GEAR_OPTIONS,
     EVC_DEFAULT_CURRENT_GEAR,
+    EVC_START_MODE_TO_INT,
     EVC_WORK_MODE_TO_INT,
     EVC_WORKING_MODE_MAP,
 )
@@ -51,7 +55,11 @@ async def async_setup_entry(
     coordinator: SolaxCoordinator = hass.data[DOMAIN][entry.entry_id]
     evc_sn = entry.data.get(CONF_EVC_SN, "unknown")
 
-    async_add_entities([EvcWorkModeSelect(coordinator, entry, evc_sn)])
+    async_add_entities([
+        EvcWorkModeSelect(coordinator, entry, evc_sn),
+        EvcStartModeSelect(coordinator, entry, evc_sn),
+        EvcChargeSceneSelect(coordinator, entry, evc_sn),
+    ])
 
 
 class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
@@ -135,3 +143,134 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
 
         # Refresh coordinator so sensor + select state update immediately
         await self.coordinator.async_request_refresh()
+
+
+class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
+    """Select entity to control the EV Charger start mode.
+
+    Determines how a charging session is initiated:
+      Plug & Charge — session starts automatically on plug-in
+      Swipe Card    — RFID card required before charging starts
+      APP           — session must be started via the SolaxCloud APP
+
+    NOTE: The realtime_data API does not return the current startMode value,
+    so current_option always returns None (unknown). The entity is still fully
+    writable — HA will show the last user-selected option via _attr_current_option
+    after a successful command.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "EVC Start Mode"
+    _attr_icon = "mdi:key-wireless"
+    _attr_options = list(EVC_START_MODE_TO_INT.keys())
+
+    def __init__(
+        self,
+        coordinator: SolaxCoordinator,
+        entry: ConfigEntry,
+        evc_sn: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._evc_sn = evc_sn
+        self._attr_unique_id = f"{entry.entry_id}_evc_start_mode_select"
+        self._attr_current_option = None   # API does not report current value
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, evc_sn)},
+            name="SolaxCloud EV Charger",
+            manufacturer="Solax Power",
+            model="X3-EVC-22K",
+            serial_number=evc_sn,
+            configuration_url="https://developer.solaxcloud.com",
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self.coordinator.data is not None
+
+    async def async_select_option(self, option: str) -> None:
+        """Send start mode command to SolaxCloud API."""
+        mode_int = EVC_START_MODE_TO_INT.get(option)
+        if mode_int is None:
+            raise HomeAssistantError(f"Unknown start mode: {option}")
+
+        payload = {
+            "snList": [self._evc_sn],
+            "startMode": mode_int,
+            "businessType": 1,
+        }
+
+        _LOGGER.info(
+            "SolaxCloud: Setting EVC start mode → %s (startMode=%s)", option, mode_int
+        )
+
+        await self.coordinator.async_send_evc_command(
+            EVC_CONTROL_START_MODE_URL, payload
+        )
+
+        # Persist selection locally — API does not report it back in realtime_data
+        self._attr_current_option = option
+        self.async_write_ha_state()
+
+
+class EvcChargeSceneSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
+    """Select entity to control the EV Charger charge scene.
+
+    Determines the charging scenario:
+      Home     — residential charging (standard mode)
+      OCPP     — connect to an OCPP backend (requires URL + ChargerId — future option)
+      Standard — standard / solar mode
+
+    NOTE: OCPP requires ocppUrl + ocppChargerId. Selecting OCPP here switches the
+    scene but does not configure OCPP parameters (deferred to Issue #9 options flow).
+    The realtime_data API does not return the current chargerScene value.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "EVC Charge Scene"
+    _attr_icon = "mdi:home-lightning-bolt"
+    _attr_options = list(EVC_CHARGE_SCENE_TO_INT.keys())
+
+    def __init__(
+        self,
+        coordinator: SolaxCoordinator,
+        entry: ConfigEntry,
+        evc_sn: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._evc_sn = evc_sn
+        self._attr_unique_id = f"{entry.entry_id}_evc_charge_scene_select"
+        self._attr_current_option = None   # API does not report current value
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, evc_sn)},
+            name="SolaxCloud EV Charger",
+            manufacturer="Solax Power",
+            model="X3-EVC-22K",
+            serial_number=evc_sn,
+            configuration_url="https://developer.solaxcloud.com",
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self.coordinator.data is not None
+
+    async def async_select_option(self, option: str) -> None:
+        """Send charge scene command to SolaxCloud API."""
+        scene_int = EVC_CHARGE_SCENE_TO_INT.get(option)
+        if scene_int is None:
+            raise HomeAssistantError(f"Unknown charge scene: {option}")
+
+        payload: dict = {
+            "snList": [self._evc_sn],
+            "chargerScene": scene_int,
+            "businessType": 1,
+        }
+
+        _LOGGER.info(
+            "SolaxCloud: Setting EVC charge scene → %s (chargerScene=%s)", option, scene_int
+        )
+
+        await self.coordinator.async_send_evc_command(EVC_CONTROL_SCENE_URL, payload)
+
+        # Persist selection locally — API does not report it back in realtime_data
+        self._attr_current_option = option
+        self.async_write_ha_state()
