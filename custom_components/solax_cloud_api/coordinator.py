@@ -28,6 +28,7 @@ from .const import (
     API_AUTH_SUCCESS_CODE,
     API_RATE_LIMIT_CODE,
     API_SUCCESS_CODE,
+    API_TOKEN_EXPIRED_CODE,
     COMMAND_POLL_DELAY,
     COMMAND_POLL_URL,
     COMMAND_STATUS_MAP,
@@ -203,6 +204,13 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             raise UpdateFailed(f"SolaxCloud: Data fetch failed: {err}") from err
 
         code = data.get("code")
+        if code == API_TOKEN_EXPIRED_CODE:
+            _LOGGER.warning(
+                "SolaxCloud: Token expired/invalid (code=10402) — clearing token, will refresh on next update"
+            )
+            self._token = None
+            self._token_expires = 0.0
+            raise UpdateFailed("SolaxCloud: Token expired — will refresh on next update")
         if code != API_SUCCESS_CODE:
             msg = data.get("msg", "unknown error")
             _LOGGER.error("SolaxCloud API error: %s (code=%s)", msg, code)
@@ -258,6 +266,15 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             ) from err
 
         code = data.get("code")
+        if code == API_TOKEN_EXPIRED_CODE:
+            _LOGGER.warning(
+                "SolaxCloud: Token expired/invalid (code=10402) — clearing token, command not sent"
+            )
+            self._token = None
+            self._token_expires = 0.0
+            raise HomeAssistantError(
+                "SolaxCloud: Token expired — please retry the command in a few seconds"
+            )
         if code == API_RATE_LIMIT_CODE:
             msg = "Rate limit exceeded (max 10 commands/min) — please wait before retrying"
             _LOGGER.warning("SolaxCloud: %s", msg)

@@ -50,6 +50,7 @@ EVC_WORKING_MODE_MAP = {
 API_SUCCESS_CODE = 10000          # data / control / poll endpoints
 API_AUTH_SUCCESS_CODE = 0         # auth endpoint
 API_RATE_LIMIT_CODE = 10200       # too many requests — back off
+API_TOKEN_EXPIRED_CODE = 10402    # token expired/invalid — bearer token rejected by data/control endpoints
 
 # Business types
 BUSINESS_TYPE_RESIDENTIAL = 1
