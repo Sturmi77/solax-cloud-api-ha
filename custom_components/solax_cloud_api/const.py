@@ -44,5 +44,32 @@ EVC_WORKING_MODE_MAP = {
     3: "Green",
 }
 
-# API success code
-API_SUCCESS_CODE = 10000
+# API success codes
+API_SUCCESS_CODE = 10000          # data / control endpoints
+API_AUTH_SUCCESS_CODE = 0         # auth endpoint
+
+# EVC Control endpoints
+EVC_CONTROL_BASE_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc_control"
+EVC_CONTROL_WORK_MODE_URL = f"{EVC_CONTROL_BASE_URL}/set_evc_work_mode"
+
+# Work mode: int → API value (same as EVC_WORKING_MODE_MAP keys)
+EVC_WORK_MODE_TO_INT: dict[str, int] = {
+    "Stop": 0,
+    "Fast": 1,
+    "ECO": 2,
+    "Green": 3,
+}
+
+# Valid currentGear values per workMode (None = not applicable)
+EVC_CURRENT_GEAR_OPTIONS: dict[str, list[int] | None] = {
+    "Stop":  None,
+    "Fast":  None,
+    "ECO":   [6, 10, 16, 20, 25],
+    "Green": [3, 6],
+}
+
+# Default currentGear when switching into a mode that requires it
+EVC_DEFAULT_CURRENT_GEAR: dict[str, int] = {
+    "ECO":   16,
+    "Green": 6,
+}

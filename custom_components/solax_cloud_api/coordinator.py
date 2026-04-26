@@ -212,3 +212,57 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             result[0].get("chargingPower"),
         )
         return result[0]
+
+    async def async_send_evc_command(self, url: str, payload: dict) -> dict:
+        """Send a control command to the SolaxCloud EVC API.
+
+        Ensures a valid token is present before sending.
+        Returns the full API response dict.
+
+        Raises:
+            HomeAssistantError  — on API-level error (code != 10000)
+            aiohttp.ClientError — on network error
+        """
+        from homeassistant.exceptions import HomeAssistantError
+
+        await self._ensure_token()
+
+        headers = {
+            "Authorization": f"bearer {self._token}",
+            "Content-Type": "application/json",
+        }
+
+        _LOGGER.debug("SolaxCloud: sending EVC command to %s — %s", url, payload)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status == 401:
+                        self._token = None
+                        self._token_expires = 0.0
+                        raise HomeAssistantError(
+                            "SolaxCloud: Command rejected — token invalidated"
+                        )
+                    resp.raise_for_status()
+                    data = await resp.json()
+        except aiohttp.ClientError as err:
+            raise HomeAssistantError(
+                f"SolaxCloud: Command failed (network): {err}"
+            ) from err
+
+        code = data.get("code")
+        if code != API_SUCCESS_CODE:
+            msg = data.get("message", "unknown error")
+            _LOGGER.error(
+                "SolaxCloud: EVC command error — %s (code=%s)", msg, code
+            )
+            raise HomeAssistantError(
+                f"SolaxCloud command failed: {msg} (code={code})"
+            )
+
+        _LOGGER.debug(
+            "SolaxCloud: EVC command delivered — requestId=%s result=%s",
+            data.get("requestId"),
+            data.get("result"),
+        )
+        return data
