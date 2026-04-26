@@ -2,25 +2,42 @@
 
 Flow:
   1. User enters client_id + client_secret
-  2. Integration validates by fetching a token
-  3. Token stored in ConfigEntry — no further manual steps required
+  2. Integration fetches & validates a token from the SolaxCloud API
+  3. Token + credentials stored in ConfigEntry.data
+  4. client_id used as unique_id — prevents duplicate setup (single_config_entry
+     also enforced in manifest.json)
 
-Re-auth flow (v1.1):
-  - Triggered when token fetch returns authentication error
-  - Allows client_secret rotation via HA UI without reinstalling
+Re-auth flow:
+  - Triggered by coordinator when a token-fetch 401 occurs
+     (i.e. client_secret was rotated in the Developer Portal)
+  - User enters new client_secret; new token is fetched immediately
+  - Existing ConfigEntry updated in-place via async_update_reload_and_abort
+  - Integration is reloaded automatically after update
+
+Security notes — see SECURITY.md:
+  - client_secret displayed as password field (PasswordSelector)
+  - Never logged; stored in ConfigEntry.data (same security level as secrets.yaml)
+  - access_token stored in ConfigEntry.data — never in logs
+
+See ARCHITECTURE.md §5 for full design rationale.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -35,21 +52,55 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# TODO Phase 2: discover EVC SN from /openapi/v2/device/list instead of hardcoding
+# Phase 2: replace with device-list API discovery
 DEFAULT_EVC_SN = "C32203J3501037"
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+# ── Schemas ──────────────────────────────────────────────────────────────────
+
+STEP_USER_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_CLIENT_ID): str,
-        vol.Required(CONF_CLIENT_SECRET): str,
+        vol.Required(CONF_CLIENT_ID): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.TEXT, autocomplete="off")
+        ),
+        vol.Required(CONF_CLIENT_SECRET): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+    }
+)
+
+STEP_REAUTH_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_CLIENT_SECRET): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
     }
 )
 
 
-async def _fetch_token(client_id: str, client_secret: str) -> tuple[str, float]:
-    """Fetch a token and return (access_token, expires_at_timestamp).
+# ── Custom exceptions ────────────────────────────────────────────────────────
 
-    Raises aiohttp.ClientError or KeyError on failure.
+
+class SolaxAuthError(Exception):
+    """Raised when SolaxCloud returns bad credentials (code != 200)."""
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+async def _fetch_token(client_id: str, client_secret: str) -> tuple[str, float]:
+    """Fetch an OAuth2 token from SolaxCloud and return (access_token, expires_at).
+
+    NOTE: SolaxCloud always returns HTTP 200, even for auth errors.
+    Actual errors are indicated by the JSON 'code' field:
+      - 200        → success, 'access_token' present
+      - 10400      → "Bad client credentials" (invalid client_id / client_secret)
+      - other 1xx  → other API errors
+
+    Raises:
+        SolaxAuthError               — API returned an error code (bad credentials)
+        aiohttp.ClientResponseError  — unexpected HTTP-level error
+        aiohttp.ClientError          — network / connection error
+        KeyError                     — unexpected response shape (missing access_token)
     """
     payload = {
         "client_id": client_id,
@@ -60,34 +111,67 @@ async def _fetch_token(client_id: str, client_secret: str) -> tuple[str, float]:
         async with session.post(TOKEN_URL, data=payload) as resp:
             resp.raise_for_status()
             result = await resp.json()
-    token = result["access_token"]
-    expires_in = result.get("expires_in", DEFAULT_TOKEN_LIFETIME)
-    expires_at = time.time() + expires_in
-    return token, expires_at
+
+    # API always returns HTTP 200 — check application-level code
+    api_code = result.get("code")
+    if api_code != 200:  # noqa: PLR2004
+        msg = result.get("message", "Unknown error")
+        _LOGGER.warning(
+            "SolaxCloud token API error: %s (code=%s)", msg, api_code
+        )
+        raise SolaxAuthError(f"API error {api_code}: {msg}")
+
+    token: str = result["access_token"]
+    expires_in: int = result.get("expires_in", DEFAULT_TOKEN_LIFETIME)
+    return token, time.time() + expires_in
+
+
+# ── Config Flow ───────────────────────────────────────────────────────────────
 
 
 class SolaxCloudConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle the SolaxCloud API config flow."""
+    """Handle the SolaxCloud API config flow.
+
+    VERSION history:
+      1 — initial: client_id, client_secret, access_token, token_expires, evc_sn
+    """
 
     VERSION = 1
+
+    # ── Setup step ────────────────────────────────────────────────────────────
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle initial user setup step."""
+        """Handle initial user setup.
+
+        Validates credentials by fetching a token, sets client_id as unique_id
+        to prevent duplicate integrations (also enforced by single_config_entry).
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            client_id = user_input[CONF_CLIENT_ID]
-            client_secret = user_input[CONF_CLIENT_SECRET]
+            client_id: str = user_input[CONF_CLIENT_ID].strip()
+            client_secret: str = user_input[CONF_CLIENT_SECRET]
+
+            # Prevent duplicate — unique_id = client_id (stable, non-user-changeable)
+            await self.async_set_unique_id(client_id)
+            self._abort_if_unique_id_configured()
 
             try:
                 token, expires_at = await _fetch_token(client_id, client_secret)
-            except aiohttp.ClientResponseError as err:
-                _LOGGER.error("SolaxCloud auth failed (HTTP %s)", err.status)
+            except SolaxAuthError:
                 errors["base"] = "invalid_auth"
-            except (aiohttp.ClientError, KeyError) as err:
-                _LOGGER.error("SolaxCloud connection error: %s", err)
+            except aiohttp.ClientResponseError as err:
+                _LOGGER.warning(
+                    "SolaxCloud setup: HTTP %s during token fetch", err.status
+                )
+                errors["base"] = "cannot_connect"
+            except (aiohttp.ClientError, TimeoutError) as err:
+                _LOGGER.warning("SolaxCloud setup: connection error: %s", err)
+                errors["base"] = "cannot_connect"
+            except KeyError:
+                _LOGGER.warning("SolaxCloud setup: unexpected token response shape")
                 errors["base"] = "cannot_connect"
             else:
                 return self.async_create_entry(
@@ -103,50 +187,68 @@ class SolaxCloudConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=STEP_USER_SCHEMA,
             errors=errors,
         )
 
-    # ── Re-auth Flow (v1.1 — placeholder) ───────────────────────────────────
+    # ── Re-auth flow ──────────────────────────────────────────────────────────
 
     async def async_step_reauth(
-        self, entry_data: dict[str, Any]
+        self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
-        """Handle re-authentication (e.g., after client_secret rotation in Developer Portal)."""
-        # TODO v1.1: implement full re-auth flow
+        """Handle re-authentication triggered by a 401 from the token endpoint.
+
+        Called automatically by HA when the coordinator raises ConfigEntryAuthFailed
+        or calls async_start_reauth(). Delegates immediately to the confirm step.
+        """
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Confirm re-auth with new client_secret."""
+        """Confirm re-auth by entering a new client_secret.
+
+        client_id is read from the existing entry and displayed in the description
+        so the user can verify they are re-authorising the correct application.
+        Uses async_update_reload_and_abort to update + reload in one step.
+        """
         errors: dict[str, str] = {}
-        entry: ConfigEntry = self._get_reauth_entry()
+        reauth_entry = self._get_reauth_entry()
 
         if user_input is not None:
+            client_id: str = reauth_entry.data[CONF_CLIENT_ID]
+            new_secret: str = user_input[CONF_CLIENT_SECRET]
+
             try:
-                token, expires_at = await _fetch_token(
-                    entry.data[CONF_CLIENT_ID],
-                    user_input[CONF_CLIENT_SECRET],
-                )
-            except (aiohttp.ClientError, KeyError):
+                token, expires_at = await _fetch_token(client_id, new_secret)
+            except SolaxAuthError:
                 errors["base"] = "invalid_auth"
+            except aiohttp.ClientResponseError as err:
+                _LOGGER.warning(
+                    "SolaxCloud reauth: HTTP %s during token fetch", err.status
+                )
+                errors["base"] = "cannot_connect"
+            except (aiohttp.ClientError, TimeoutError) as err:
+                _LOGGER.warning("SolaxCloud reauth: connection error: %s", err)
+                errors["base"] = "cannot_connect"
+            except KeyError:
+                _LOGGER.warning("SolaxCloud reauth: unexpected token response shape")
+                errors["base"] = "cannot_connect"
             else:
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data={
-                        **entry.data,
-                        CONF_CLIENT_SECRET: user_input[CONF_CLIENT_SECRET],
+                # Update entry in-place, reload integration, abort flow
+                return self.async_update_reload_and_abort(
+                    reauth_entry,
+                    data_updates={
+                        CONF_CLIENT_SECRET: new_secret,
                         CONF_ACCESS_TOKEN: token,
                         CONF_TOKEN_EXPIRES: expires_at,
                     },
                 )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
 
-        schema = vol.Schema({vol.Required(CONF_CLIENT_SECRET): str})
+        client_id_hint = reauth_entry.data.get(CONF_CLIENT_ID, "")
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=schema,
+            data_schema=STEP_REAUTH_SCHEMA,
             errors=errors,
+            description_placeholders={"client_id": client_id_hint},
         )

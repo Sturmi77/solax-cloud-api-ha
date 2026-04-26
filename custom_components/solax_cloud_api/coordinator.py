@@ -98,16 +98,23 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(TOKEN_URL, data=payload) as resp:
-                    if resp.status == 401:
-                        _LOGGER.error(
-                            "SolaxCloud: Token fetch returned 401 — credentials invalid"
-                        )
-                        self._entry.async_start_reauth(self.hass)
-                        raise UpdateFailed("Invalid credentials — re-authentication required")
                     resp.raise_for_status()
                     result = await resp.json()
         except aiohttp.ClientError as err:
             raise UpdateFailed(f"SolaxCloud: Token fetch failed: {err}") from err
+
+        # NOTE: SolaxCloud always returns HTTP 200 — auth errors indicated by
+        # application-level 'code' field (e.g. 10400 = bad credentials).
+        api_code = result.get("code")
+        if api_code != 200:  # noqa: PLR2004
+            msg = result.get("message", "Unknown error")
+            _LOGGER.error(
+                "SolaxCloud: Token API error — %s (code=%s) — triggering re-auth",
+                msg,
+                api_code,
+            )
+            self._entry.async_start_reauth(self.hass)
+            raise UpdateFailed(f"Invalid credentials (code={api_code}) — re-authentication required")
 
         access_token = result.get("access_token")
         if not access_token:

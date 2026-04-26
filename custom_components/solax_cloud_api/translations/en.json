@@ -7,13 +7,20 @@
         "data": {
           "client_id": "Client ID",
           "client_secret": "Client Secret"
+        },
+        "data_description": {
+          "client_id": "The Client ID of your SolaxCloud Developer Application.",
+          "client_secret": "The Client Secret of your SolaxCloud Developer Application. Treated as a password — never shared."
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate SolaxCloud API",
-        "description": "Enter your new Client Secret to restore the connection.",
+        "description": "Re-authenticate Application **{client_id}**. Enter the new Client Secret from your SolaxCloud Developer Portal.",
         "data": {
           "client_secret": "Client Secret"
+        },
+        "data_description": {
+          "client_secret": "The new Client Secret after rotation in the Developer Portal."
         }
       }
     },
@@ -22,8 +29,8 @@
       "invalid_auth": "Invalid credentials. Check your Client ID and Client Secret in the Developer Portal."
     },
     "abort": {
-      "already_configured": "SolaxCloud API is already configured. Only one instance is supported (one active token per application).",
-      "reauth_successful": "Re-authentication successful."
+      "already_configured": "SolaxCloud API is already configured. Only one instance is supported.",
+      "reauth_successful": "Re-authentication successful. The integration has been reloaded."
     }
   }
 }

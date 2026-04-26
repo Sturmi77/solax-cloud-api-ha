@@ -7,23 +7,30 @@
         "data": {
           "client_id": "Client ID",
           "client_secret": "Client Secret"
+        },
+        "data_description": {
+          "client_id": "The Client ID of your SolaxCloud Developer Application.",
+          "client_secret": "The Client Secret of your SolaxCloud Developer Application. Treated as a password — never shared."
         }
       },
       "reauth_confirm": {
-        "title": "Re-authenticate SolaxCloud API",
-        "description": "Enter your new Client Secret to restore the connection.",
+        "title": "[%key:common::config_flow::title::reauth%]",
+        "description": "Re-authenticate Application **{client_id}**. Enter the new Client Secret from your SolaxCloud Developer Portal.",
         "data": {
           "client_secret": "Client Secret"
+        },
+        "data_description": {
+          "client_secret": "The new Client Secret after rotation in the Developer Portal."
         }
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect to SolaxCloud API. Check your internet connection.",
-      "invalid_auth": "Invalid credentials. Check your Client ID and Client Secret in the Developer Portal."
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]"
     },
     "abort": {
-      "already_configured": "SolaxCloud API is already configured. Only one instance is supported (one active token per application).",
-      "reauth_successful": "Re-authentication successful."
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
     }
   }
 }
