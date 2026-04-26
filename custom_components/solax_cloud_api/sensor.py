@@ -41,6 +41,9 @@ from homeassistant.util import dt as dt_util
 from .const import CONF_EVC_SN, DOMAIN, EVC_STATUS_MAP, EVC_WORKING_MODE_MAP, _evc_device_info
 from .coordinator import SolaxCoordinator
 
+# Limit concurrent update calls to 1 — appropriate for cloud API to avoid rate limiting
+PARALLEL_UPDATES = 1
+
 
 @dataclass(frozen=True, kw_only=True)
 class SolaxSensorEntityDescription(SensorEntityDescription):

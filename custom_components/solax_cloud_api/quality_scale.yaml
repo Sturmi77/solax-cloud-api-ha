@@ -11,6 +11,6 @@ rules:
   docs-installation-instructions: done  # README contains HACS and manual install steps
   integration-owner: done  # codeowners: @Sturmi77
   log-when-unavailable: done  # UpdateFailed raises log entry in coordinator
-  parallel-updates: todo  # PARALLEL_UPDATES constant not yet defined in sensor.py
+  parallel-updates: done  # PARALLEL_UPDATES = 1 set in sensor.py, select.py, number.py
   reauthentication-flow: done  # Re-auth flow implemented in config_flow.py
   test-coverage: todo  # No test suite exists yet (target: 95%+ for Silver tier)

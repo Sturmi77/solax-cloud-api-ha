@@ -42,6 +42,9 @@ from .coordinator import SolaxCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Limit concurrent update calls to 1 — appropriate for cloud API to avoid rate limiting
+PARALLEL_UPDATES = 1
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
