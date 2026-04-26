@@ -21,10 +21,16 @@ import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    API_POLL_SUCCESS_CODE,
+    API_RATE_LIMIT_CODE,
     API_SUCCESS_CODE,
+    COMMAND_POLL_DELAY,
+    COMMAND_POLL_URL,
+    COMMAND_STATUS_MAP,
     CONF_ACCESS_TOKEN,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -217,14 +223,15 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         """Send a control command to the SolaxCloud EVC API.
 
         Ensures a valid token is present before sending.
+        Schedules async_poll_command_result() to run after COMMAND_POLL_DELAY
+        seconds to check delivery and surface failures as persistent notifications.
+
         Returns the full API response dict.
 
         Raises:
             HomeAssistantError  — on API-level error (code != 10000)
             aiohttp.ClientError — on network error
         """
-        from homeassistant.exceptions import HomeAssistantError
-
         await self._ensure_token()
 
         headers = {
@@ -251,6 +258,10 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             ) from err
 
         code = data.get("code")
+        if code == API_RATE_LIMIT_CODE:
+            msg = "Rate limit exceeded (max 10 commands/min) — please wait before retrying"
+            _LOGGER.warning("SolaxCloud: %s", msg)
+            raise HomeAssistantError(f"SolaxCloud: {msg}")
         if code != API_SUCCESS_CODE:
             msg = data.get("message", "unknown error")
             _LOGGER.error(
@@ -260,9 +271,102 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 f"SolaxCloud command failed: {msg} (code={code})"
             )
 
+        request_id = data.get("requestId")
         _LOGGER.debug(
-            "SolaxCloud: EVC command delivered — requestId=%s result=%s",
-            data.get("requestId"),
-            data.get("result"),
+            "SolaxCloud: EVC command accepted — requestId=%s, polling in %ds",
+            request_id,
+            COMMAND_POLL_DELAY,
         )
+
+        # Schedule delivery confirmation poll — non-blocking
+        if request_id:
+            self.hass.loop.call_later(
+                COMMAND_POLL_DELAY,
+                lambda: self.hass.async_create_task(
+                    self.async_poll_command_result(request_id)
+                ),
+            )
+
         return data
+
+    async def async_poll_command_result(self, request_id: str) -> None:
+        """Poll the command delivery result and notify on failure.
+
+        Called automatically COMMAND_POLL_DELAY seconds after each control command.
+        Uses the /openapi/apiRequestLog/listByCondition endpoint.
+
+        Status codes (Appendix 8):
+          1 = Pending   — device not yet reached (log debug, no notification)
+          2 = Success   — command executed successfully
+          3 = Delivered — delivered to device
+          4 = Failed    — device rejected the command (persistent notification)
+
+        NOTE: This endpoint uses code=0 for success (not 10000 like other endpoints).
+        """
+        _LOGGER.debug("SolaxCloud: Polling command result for requestId=%s", request_id)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    COMMAND_POLL_URL,
+                    json={"requestId": request_id},
+                    headers={"Authorization": f"bearer {self._token}"},
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "SolaxCloud: Command poll failed for requestId=%s: %s", request_id, err
+            )
+            return
+
+        # Poll endpoint returns code=0 on success (different from control endpoints)
+        if data.get("code") != API_POLL_SUCCESS_CODE:
+            _LOGGER.warning(
+                "SolaxCloud: Poll endpoint error — code=%s message=%s",
+                data.get("code"),
+                data.get("message"),
+            )
+            return
+
+        results: list[dict] = data.get("result") or []
+        for device_result in results:
+            sn = device_result.get("sn", "unknown")
+            status = device_result.get("status")
+            status_name = COMMAND_STATUS_MAP.get(status, f"Unknown({status})")
+
+            if status in (2, 3):  # Success or Delivered
+                _LOGGER.debug(
+                    "SolaxCloud: Command %s — device %s: %s",
+                    request_id,
+                    sn,
+                    status_name,
+                )
+            elif status == 1:  # Still pending after COMMAND_POLL_DELAY
+                _LOGGER.debug(
+                    "SolaxCloud: Command %s still pending for device %s after %ds",
+                    request_id,
+                    sn,
+                    COMMAND_POLL_DELAY,
+                )
+            elif status == 4:  # Failed
+                _LOGGER.error(
+                    "SolaxCloud: Command %s FAILED for device %s",
+                    request_id,
+                    sn,
+                )
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "title": "SolaxCloud: Command Failed",
+                            "message": (
+                                f"A command to device **{sn}** could not be delivered.\n\n"
+                                f"Request ID: `{request_id}`\n"
+                                "Please check the device status in the SolaxCloud app."
+                            ),
+                            "notification_id": f"solax_cmd_failed_{request_id}",
+                        },
+                    )
+                )

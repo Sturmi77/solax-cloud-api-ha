@@ -44,9 +44,23 @@ EVC_WORKING_MODE_MAP = {
     3: "Green",
 }
 
-# API success codes
+# API response codes
 API_SUCCESS_CODE = 10000          # data / control endpoints
 API_AUTH_SUCCESS_CODE = 0         # auth endpoint
+API_POLL_SUCCESS_CODE = 10000     # command result polling endpoint
+API_RATE_LIMIT_CODE = 10200       # too many requests — back off
+
+# Command result polling
+COMMAND_POLL_URL = "https://openapi-eu.solaxcloud.com/openapi/apiRequestLog/listByCondition"
+COMMAND_POLL_DELAY = 5            # seconds to wait before polling
+
+# Command delivery status codes (Appendix 8)
+COMMAND_STATUS_MAP: dict[int, str] = {
+    1: "Pending",
+    2: "Success",
+    3: "Delivered",
+    4: "Failed",
+}
 
 # EVC Control endpoints
 EVC_CONTROL_BASE_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc_control"
