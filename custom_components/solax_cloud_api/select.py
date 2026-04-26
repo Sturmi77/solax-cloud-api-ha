@@ -22,11 +22,11 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    BUSINESS_TYPE_RESIDENTIAL,
     CONF_EVC_SN,
     DOMAIN,
     EVC_CHARGE_SCENE_TO_INT,
@@ -37,13 +37,11 @@ from .const import (
     EVC_START_MODE_TO_INT,
     EVC_WORK_MODE_TO_INT,
     EVC_WORKING_MODE_MAP,
+    _evc_device_info,
 )
 from .coordinator import SolaxCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-
-# Human-readable options shown in HA UI (order matters — matches workMode 0–3)
-WORK_MODE_OPTIONS = ["Stop", "Fast", "ECO", "Green"]
 
 
 async def async_setup_entry(
@@ -73,7 +71,7 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
     _attr_has_entity_name = True
     _attr_name = "EVC Work Mode"
     _attr_icon = "mdi:ev-station"
-    _attr_options = WORK_MODE_OPTIONS
+    _attr_options = list(EVC_WORK_MODE_TO_INT.keys())
 
     def __init__(
         self,
@@ -84,14 +82,7 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         super().__init__(coordinator)
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_work_mode_select"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, evc_sn)},
-            name="SolaxCloud EV Charger",
-            manufacturer="Solax Power",
-            model="X3-EVC-22K",
-            serial_number=evc_sn,
-            configuration_url="https://developer.solaxcloud.com",
-        )
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
 
     @property
     def current_option(self) -> str | None:
@@ -122,7 +113,7 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         payload: dict = {
             "snList": [self._evc_sn],
             "workMode": work_mode_int,
-            "businessType": 1,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
         # ECO and Green require a currentGear — send the default
@@ -174,17 +165,11 @@ class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_start_mode_select"
         self._attr_current_option = None   # API does not report current value
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, evc_sn)},
-            name="SolaxCloud EV Charger",
-            manufacturer="Solax Power",
-            model="X3-EVC-22K",
-            serial_number=evc_sn,
-            configuration_url="https://developer.solaxcloud.com",
-        )
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
 
     @property
     def available(self) -> bool:
+        """Return True if EVC is online (status != 0)."""
         return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def async_select_option(self, option: str) -> None:
@@ -196,7 +181,7 @@ class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         payload = {
             "snList": [self._evc_sn],
             "startMode": mode_int,
-            "businessType": 1,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
         _LOGGER.info(
@@ -240,17 +225,11 @@ class EvcChargeSceneSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_charge_scene_select"
         self._attr_current_option = None   # API does not report current value
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, evc_sn)},
-            name="SolaxCloud EV Charger",
-            manufacturer="Solax Power",
-            model="X3-EVC-22K",
-            serial_number=evc_sn,
-            configuration_url="https://developer.solaxcloud.com",
-        )
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
 
     @property
     def available(self) -> bool:
+        """Return True if EVC is online (status != 0)."""
         return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def async_select_option(self, option: str) -> None:
@@ -262,7 +241,7 @@ class EvcChargeSceneSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         payload: dict = {
             "snList": [self._evc_sn],
             "chargerScene": scene_int,
-            "businessType": 1,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
         _LOGGER.info(

@@ -1,11 +1,13 @@
 """Constants for the SolaxCloud API integration."""
 
+from homeassistant.helpers.entity import DeviceInfo
+
 DOMAIN = "solax_cloud_api"
 
 # API endpoints
 TOKEN_URL = "https://openapi-eu.solaxcloud.com/openapi/auth/oauth/token"
 DATA_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/realtime_data"
-DEVICE_LIST_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/list"
+# TODO Issue #5: DEVICE_LIST_URL will be used for inverter/battery device discovery
 
 # Token management
 TOKEN_REFRESH_BUFFER = 3600  # seconds before expiry to trigger refresh (1 hour)
@@ -45,10 +47,12 @@ EVC_WORKING_MODE_MAP = {
 }
 
 # API response codes
-API_SUCCESS_CODE = 10000          # data / control endpoints
+API_SUCCESS_CODE = 10000          # data / control / poll endpoints
 API_AUTH_SUCCESS_CODE = 0         # auth endpoint
-API_POLL_SUCCESS_CODE = 10000     # command result polling endpoint
 API_RATE_LIMIT_CODE = 10200       # too many requests — back off
+
+# Business types
+BUSINESS_TYPE_RESIDENTIAL = 1
 
 # Command result polling
 COMMAND_POLL_URL = "https://openapi-eu.solaxcloud.com/openapi/apiRequestLog/listByCondition"
@@ -103,3 +107,15 @@ EVC_DEFAULT_CURRENT_GEAR: dict[str, int] = {
     "ECO":   16,
     "Green": 6,
 }
+
+
+def _evc_device_info(domain: str, evc_sn: str) -> DeviceInfo:
+    """Return shared DeviceInfo for the EVC entity."""
+    return DeviceInfo(
+        identifiers={(domain, evc_sn)},
+        name="SolaxCloud EV Charger",
+        manufacturer="Solax Power",
+        model="X3-EVC-22K",
+        serial_number=evc_sn,
+        configuration_url="https://developer.solaxcloud.com",
+    )

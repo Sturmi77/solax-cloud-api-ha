@@ -45,5 +45,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update — reload integration if config changes."""
+    """Handle options update — reload integration if config changes.
+
+    Scaffolding: options flow not yet implemented — will handle future user-configurable options
+    """
     await hass.config_entries.async_reload(entry.entry_id)

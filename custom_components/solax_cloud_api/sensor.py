@@ -34,12 +34,11 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_EVC_SN, DOMAIN, EVC_STATUS_MAP, EVC_WORKING_MODE_MAP
+from .const import CONF_EVC_SN, DOMAIN, EVC_STATUS_MAP, EVC_WORKING_MODE_MAP, _evc_device_info
 from .coordinator import SolaxCoordinator
 
 
@@ -163,14 +162,7 @@ class SolaxSensorEntity(CoordinatorEntity[SolaxCoordinator], SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, evc_sn)},
-            name="SolaxCloud EV Charger",
-            manufacturer="Solax Power",
-            model="X3-EVC-22K",
-            serial_number=evc_sn,
-            configuration_url="https://developer.solaxcloud.com",
-        )
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
         # Track previous session energy to detect session resets (for last_reset)
         self._last_session_energy: float | None = None
         self._session_last_reset: datetime | None = None

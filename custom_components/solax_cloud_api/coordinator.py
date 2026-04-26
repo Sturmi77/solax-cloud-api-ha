@@ -25,7 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
-    API_POLL_SUCCESS_CODE,
+    API_AUTH_SUCCESS_CODE,
     API_RATE_LIMIT_CODE,
     API_SUCCESS_CODE,
     COMMAND_POLL_DELAY,
@@ -72,7 +72,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
 
     # ── Token Management ─────────────────────────────────────────────────────
 
-    async def _load_token_from_entry(self) -> None:
+    def _load_token_from_entry(self) -> None:
         """Load token and expiry from ConfigEntry.
 
         Called once on first update. Subsequent restarts skip the token endpoint
@@ -113,7 +113,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         # access_token is nested inside result.result (not result directly).
         api_code = result.get("code")
         token_data = result.get("result")
-        if api_code != 0 or not token_data:  # noqa: PLR2004
+        if api_code != API_AUTH_SUCCESS_CODE or not token_data:
             msg = result.get("message", "Unknown error")
             _LOGGER.error(
                 "SolaxCloud: Token API error — %s (code=%s) — triggering re-auth",
@@ -157,7 +157,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
           3. Otherwise → reuse existing token (no API call)
         """
         if self._token is None:
-            await self._load_token_from_entry()
+            self._load_token_from_entry()
 
         needs_refresh = self._token is None or time.time() >= (
             self._token_expires - TOKEN_REFRESH_BUFFER
@@ -301,7 +301,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
           3 = Delivered — delivered to device
           4 = Failed    — device rejected the command (persistent notification)
 
-        NOTE: This endpoint uses code=0 for success (not 10000 like other endpoints).
+        NOTE: This endpoint uses code=10000 for success (same as data/control endpoints; docs incorrectly state code=0).
         """
         _LOGGER.debug("SolaxCloud: Polling command result for requestId=%s", request_id)
 
@@ -320,8 +320,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             )
             return
 
-        # Poll endpoint returns code=0 on success (different from control endpoints)
-        if data.get("code") != API_POLL_SUCCESS_CODE:
+        if data.get("code") != API_SUCCESS_CODE:
             _LOGGER.warning(
                 "SolaxCloud: Poll endpoint error — code=%s message=%s",
                 data.get("code"),

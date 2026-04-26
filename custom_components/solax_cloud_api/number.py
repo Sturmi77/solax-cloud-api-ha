@@ -25,17 +25,18 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    BUSINESS_TYPE_RESIDENTIAL,
     CONF_EVC_SN,
     DOMAIN,
     EVC_CONTROL_WORK_MODE_URL,
     EVC_CURRENT_GEAR_OPTIONS,
     EVC_WORK_MODE_TO_INT,
     EVC_WORKING_MODE_MAP,
+    _evc_device_info,
 )
 from .coordinator import SolaxCoordinator
 
@@ -69,10 +70,6 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
     _attr_mode = NumberMode.BOX          # show as input box, not slider
     _attr_native_step = 1.0
 
-    # Widest possible range — actual min/max reported dynamically
-    _attr_native_min_value = 3.0
-    _attr_native_max_value = 25.0
-
     def __init__(
         self,
         coordinator: SolaxCoordinator,
@@ -82,14 +79,7 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
         super().__init__(coordinator)
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_charging_current"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, evc_sn)},
-            name="SolaxCloud EV Charger",
-            manufacturer="Solax Power",
-            model="X3-EVC-22K",
-            serial_number=evc_sn,
-            configuration_url="https://developer.solaxcloud.com",
-        )
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
 
     def _current_mode_name(self) -> str | None:
         """Return current work mode name (Stop/Fast/ECO/Green) or None."""
@@ -153,7 +143,7 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
             "snList": [self._evc_sn],
             "workMode": work_mode_int,
             "currentGear": target_gear,
-            "businessType": 1,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
         _LOGGER.info(

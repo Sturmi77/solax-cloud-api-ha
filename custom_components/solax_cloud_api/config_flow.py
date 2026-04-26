@@ -52,7 +52,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Phase 2: replace with device-list API discovery
+# TODO Issue #5: replace with device-list API discovery once inverter/battery endpoints are implemented
 DEFAULT_EVC_SN = "C32203J3501037"
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ STEP_REAUTH_SCHEMA = vol.Schema(
 
 
 class SolaxAuthError(Exception):
-    """Raised when SolaxCloud returns bad credentials (code != 200)."""
+    """Raised when SolaxCloud returns bad credentials (code != 0)."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ async def _fetch_token(client_id: str, client_secret: str) -> tuple[str, float]:
 
     NOTE: SolaxCloud always returns HTTP 200, even for auth errors.
     Actual errors are indicated by the JSON 'code' field:
-      - 200        → success, 'access_token' present
+      - code=0     → success, 'access_token' present
       - 10400      → "Bad client credentials" (invalid client_id / client_secret)
       - other 1xx  → other API errors
 
