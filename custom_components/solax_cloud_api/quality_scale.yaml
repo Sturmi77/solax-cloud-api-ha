@@ -1,0 +1,16 @@
+rules:
+  # Bronze tier rules
+  action-setup: N/A  # Integration does not register service actions
+  appropriate-polling: done  # Poll interval is 300s (5 min), appropriate for cloud API
+  brands: todo  # Logo/icon not yet submitted to home-assistant/brands
+  common-modules: done  # DeviceInfo helper (_evc_device_info) centralised in const.py
+  config-flow-test-coverage: todo  # No automated tests exist yet
+  config-flow: done  # Full UI config flow with re-authentication
+  dependency-transparency: done  # No extra PyPI deps; uses HA built-in aiohttp
+  docs-high-level-description: done  # README contains integration overview
+  docs-installation-instructions: done  # README contains HACS and manual install steps
+  integration-owner: done  # codeowners: @Sturmi77
+  log-when-unavailable: done  # UpdateFailed raises log entry in coordinator
+  parallel-updates: todo  # PARALLEL_UPDATES constant not yet defined in sensor.py
+  reauthentication-flow: done  # Re-auth flow implemented in config_flow.py
+  test-coverage: todo  # No test suite exists yet (target: 95%+ for Silver tier)
