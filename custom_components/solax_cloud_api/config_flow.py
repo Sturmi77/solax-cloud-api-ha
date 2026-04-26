@@ -1,9 +1,9 @@
 """Config Flow for SolaxCloud API integration.
 
 Flow:
-  1. User enters client_id + client_secret
+  1. User enters client_id, client_secret, and evc_sn
   2. Integration fetches & validates a token from the SolaxCloud API
-  3. Token + credentials stored in ConfigEntry.data
+  3. Token + credentials + evc_sn stored in ConfigEntry.data
   4. client_id used as unique_id — prevents duplicate setup (single_config_entry
      also enforced in manifest.json)
 
@@ -52,9 +52,6 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# TODO Issue #5: replace with device-list API discovery once inverter/battery endpoints are implemented
-DEFAULT_EVC_SN = "C32203J3501037"
-
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 STEP_USER_SCHEMA = vol.Schema(
@@ -64,6 +61,9 @@ STEP_USER_SCHEMA = vol.Schema(
         ),
         vol.Required(CONF_CLIENT_SECRET): TextSelector(
             TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+        vol.Required(CONF_EVC_SN): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.TEXT, autocomplete="off")
         ),
     }
 )
@@ -81,7 +81,7 @@ STEP_REAUTH_SCHEMA = vol.Schema(
 
 
 class SolaxAuthError(Exception):
-    """Raised when SolaxCloud auth endpoint returns a non-zero code.
+    """Raised when SolaxCloud auth endpoint returns code != 0.
 
     The auth endpoint always returns HTTP 200. Errors are indicated by the JSON 'code' field:
       code=0     → success
@@ -172,6 +172,7 @@ class SolaxCloudConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             client_id: str = user_input[CONF_CLIENT_ID].strip()
             client_secret: str = user_input[CONF_CLIENT_SECRET]
+            evc_sn: str = user_input[CONF_EVC_SN].strip()
 
             # Prevent duplicate — unique_id = client_id (stable, non-user-changeable)
             await self.async_set_unique_id(client_id)
@@ -200,7 +201,7 @@ class SolaxCloudConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_CLIENT_SECRET: client_secret,
                         CONF_ACCESS_TOKEN: token,
                         CONF_TOKEN_EXPIRES: expires_at,
-                        CONF_EVC_SN: DEFAULT_EVC_SN,
+                        CONF_EVC_SN: evc_sn,
                     },
                 )
 

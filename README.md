@@ -49,6 +49,7 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 - A [SolaxCloud Developer Portal](https://developer.solaxcloud.com) account
 - An Application created in the Developer Portal with your EVC registered
 - `client_id` and `client_secret` from the Developer Portal
+- Your EV Charger's Device Serial Number (`deviceSn`) — visible in Developer Portal → Device → Device List
 
 ---
 
@@ -72,8 +73,9 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **SolaxCloud API**
-3. Enter your `client_id` and `client_secret`
-4. The integration fetches a token, validates it, and discovers your devices automatically
+3. Enter your `client_id` and `client_secret` from the Developer Portal
+4. Enter your **EV Charger Serial Number** (`deviceSn`) — found in the Developer Portal under **Device → Device List**
+5. The integration validates your credentials, sets up all sensor and control entities, and appears under your devices
 
 ---
 

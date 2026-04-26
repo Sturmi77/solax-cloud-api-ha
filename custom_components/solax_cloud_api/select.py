@@ -169,7 +169,7 @@ class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if EVC is online (status != 0)."""
+        """Return True if EVC is online and coordinator data is present."""
         return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def async_select_option(self, option: str) -> None:
@@ -229,7 +229,7 @@ class EvcChargeSceneSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if EVC is online (status != 0)."""
+        """Return True if EVC is online and coordinator data is present."""
         return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def async_select_option(self, option: str) -> None:

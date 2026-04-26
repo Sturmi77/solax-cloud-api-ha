@@ -47,6 +47,7 @@ from .const import (
     DATA_URL,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_TOKEN_LIFETIME,
+    BUSINESS_TYPE_RESIDENTIAL,
     DEVICE_TYPE_EVC,
     DOMAIN,
     TOKEN_REFRESH_BUFFER,
@@ -205,7 +206,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         params = {
             "snList": evc_sn,
             "deviceType": str(DEVICE_TYPE_EVC),
-            "businessType": "1",
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
         headers = {"Authorization": f"bearer {self._token}"}
 

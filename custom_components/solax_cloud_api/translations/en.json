@@ -6,11 +6,13 @@
         "description": "Enter your SolaxCloud Developer Portal credentials. You can find these at https://developer.solaxcloud.com under your Application settings.",
         "data": {
           "client_id": "Client ID",
-          "client_secret": "Client Secret"
+          "client_secret": "Client Secret",
+          "evc_sn": "EV Charger Serial Number"
         },
         "data_description": {
           "client_id": "The Client ID of your SolaxCloud Developer Application.",
-          "client_secret": "The Client Secret of your SolaxCloud Developer Application. Treated as a password — never shared."
+          "client_secret": "The Client Secret of your SolaxCloud Developer Application. Treated as a password — never shared.",
+          "evc_sn": "The deviceSn of your EV Charger. Found in the SolaxCloud Developer Portal under Device → Device List."
         }
       },
       "reauth_confirm": {

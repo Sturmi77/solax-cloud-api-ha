@@ -320,9 +320,9 @@ Per [HA Developer Docs — Sensor Entity](https://developers.home-assistant.io/d
 User: Settings → Integrations → Add → "SolaxCloud API"
   │
   ├─ async_step_user()
-  │    Form: client_id (required), client_secret (required)
+  │    Form: client_id (required), client_secret (required), evc_sn (required)
   │    Validate: POST token endpoint → success?
-  │         ✅ create_entry(data={client_id, client_secret, access_token, token_expires})
+  │         ✅ create_entry(data={client_id, client_secret, access_token, token_expires, evc_sn})
   │         ❌ show error "cannot_connect"
 ```
 
