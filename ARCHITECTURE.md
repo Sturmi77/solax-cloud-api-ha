@@ -41,11 +41,20 @@ client_id=<id>&client_secret=<secret>&grant_type=client_credentials
 **Response:**
 ```json
 {
-  "access_token": "YJW_GgioKlaEXd2pzjt0dswWgDY",
-  "token_type": "bearer",
-  "expires_in": 2591999
+  "code": 0,
+  "result": {
+    "access_token": "YJW_GgioKlaEXd2pzjt0dswWgDY",
+    "token_type": "bearer",
+    "expires_in": 2591999,
+    "scope": "...",
+    "grant_type": "client_credentials"
+  }
 }
 ```
+
+> **NOTE:** The auth endpoint uses `code=0` for success. All other endpoints (data, control, poll)
+> use `code=10000`. The `access_token` is flat inside `result` (i.e. `result.access_token`),
+> not nested in `result.result`.
 
 **Critical constraints:**
 - `expires_in` ≈ 30 days — no `refresh_token` returned
@@ -165,6 +174,37 @@ HA Start
 | `single_config_entry: true` | Enforces one-token-per-application constraint at the HA level |
 | `_ensure_token()` called before every data fetch | Guarantees token validity without a separate refresh loop |
 
+### Token Invalidation Handling
+
+#### HTTP 401
+The data endpoint occasionally returns HTTP 401 when the token was invalidated externally
+(e.g., a new token was fetched by another client). On 401:
+- Token cleared from memory
+- Token cleared from ConfigEntry
+- `UpdateFailed` raised → HA waits for next 5-min interval
+- `_ensure_token()` on next cycle fetches a fresh token automatically
+
+#### code=10402 — "Request access_token authentication failed"
+The data endpoint returns `code=10402` when the bearer token is rejected at the API layer
+(same cause as HTTP 401 but surfaced via JSON instead of HTTP status). On 10402:
+- Token cleared from memory (`self._token = None`)
+- Token cleared from ConfigEntry (`CONF_ACCESS_TOKEN=None`, `CONF_TOKEN_EXPIRES=0.0`)
+- `UpdateFailed` raised
+- Self-heals on next poll cycle — no user action required
+
+**Critical:** ConfigEntry must also be cleared, not just the in-memory token.
+If only `self._token` is cleared, `_load_token_from_entry()` will reload the dead
+token from ConfigEntry on the next cycle, `_ensure_token` will see a non-None token
+with a future expiry, and skip `_fetch_new_token()` — causing an infinite 10402 loop.
+
+#### Why no update_listener
+`add_update_listener()` fires on ANY `async_update_entry()` call — including the coordinator's
+internal token saves (every ~29 days and on 10402 recovery). Registering a listener
+that calls `async_reload()` would cause the integration to reload on every token persistence,
+triggering another token fetch, which invalidates the just-saved token, causing 10402 again.
+No update_listener is registered until an options flow exists that separates options updates
+from token saves.
+
 ### Implementation Sketch
 
 ```python
@@ -177,7 +217,7 @@ class SolaxCoordinator(DataUpdateCoordinator):
     async def _ensure_token(self):
         """Fetch a new token only when needed."""
         if self._token is None:
-            await self._load_token_from_entry()
+            self._load_token_from_entry()  # sync — reads from ConfigEntry only
         if self._token is None or time.time() >= (self._token_expires - TOKEN_REFRESH_BUFFER):
             await self._fetch_new_token()
 
@@ -349,3 +389,5 @@ custom_components/solax_cloud_api/
 | EU endpoint only | Only `openapi-eu.solaxcloud.com` tested | May need region configuration in Phase 2 |
 | Counter reset on device replacement | `TOTAL_INCREASING` will flag anomaly | Switch to `TOTAL` + `last_reset` on replacement |
 | HA offline >30 days | Token expired — cannot be refreshed | `_ensure_token()` auto-fetches new token on next HA start |
+| `code=10402` self-healing | Token invalidated externally causes 10402; coordinator auto-recovers on next poll (ConfigEntry cleared, fresh token fetched) | None — fully automatic |
+| No update_listener | Registering would cause reload loop on token saves | Re-add in Issue #7 when options flow separates token saves from options updates |

@@ -30,8 +30,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # NOTE: No update_listener registered — token saves via async_update_entry(data=...)
-    # would trigger a reload loop. Re-add when an options flow is implemented (Issue #7).
+    # NOTE: No update_listener registered intentionally.
+    # add_update_listener() fires on ANY async_update_entry() call, including
+    # the coordinator's internal token saves. Registering a listener that reloads
+    # the integration would cause a reload loop on every token persistence.
+    # Re-add when an options flow exists and token saves are separated from options updates.
+    # See: Issue #7 (HACS release) — options flow planned.
     return True
 
 

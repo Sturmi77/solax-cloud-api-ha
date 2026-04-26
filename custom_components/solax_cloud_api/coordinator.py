@@ -6,7 +6,14 @@ Key design decisions:
 - _ensure_token() called before every update — only fetches when needed (1h buffer)
 - Single config entry enforced via manifest.json — prevents parallel token invalidation
 - Never logs full token — only first 4 chars for debugging
-- 401 response → triggers re-auth flow (user sees notification in HA UI)
+- 401 response → clears token + ConfigEntry, raises UpdateFailed; self-heals on next cycle
+- code=10402 ("Request access_token authentication failed") handled identically to 401 —
+  clears both in-memory token and ConfigEntry to prevent _load_token_from_entry() from
+  resurrecting a dead token. Self-heals without user action.
+- No update_listener registered — add_update_listener() fires on ANY async_update_entry()
+  call, including the coordinator's internal token saves. A listener that reloads the
+  integration would cause a reload loop on every token persistence.
+- API_RATE_LIMIT_CODE = 10200 used in practice; official docs list 10406. See const.py.
 
 See ARCHITECTURE.md §6 and SECURITY.md §2 for details.
 """
@@ -93,8 +100,26 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         """Fetch a new token from the SolaxCloud API and persist immediately.
 
         ⚠️ WARNING: Each call immediately invalidates the previous active token.
+        SolaxCloud allows only one active token per Application — fetching a new
+        token IMMEDIATELY invalidates the previous one for all clients sharing
+        the same client_id/client_secret.
+
         Only call this when the token is genuinely missing or within TOKEN_REFRESH_BUFFER
         of expiry. Never call from background tasks or polling loops directly.
+
+        Response structure (auth endpoint, code=0 on success):
+          {
+            "code": 0,
+            "result": {
+              "access_token": "...",
+              "token_type": "bearer",
+              "expires_in": 2591999,
+              ...
+            }
+          }
+
+        NOTE: access_token is flat inside result (i.e. result.access_token),
+        not nested in result.result. The result key IS the token data object.
         """
         _LOGGER.info("SolaxCloud: Fetching new access token")
         payload = {
@@ -111,7 +136,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             raise UpdateFailed(f"SolaxCloud: Token fetch failed: {err}") from err
 
         # Auth endpoint: code=0 on success, code=10400 on bad credentials.
-        # access_token is nested inside result.result (not result directly).
+        # access_token is flat inside result (result.access_token), not nested.
         api_code = result.get("code")
         token_data = result.get("result")
         if api_code != API_AUTH_SUCCESS_CODE or not token_data:
@@ -211,7 +236,9 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             )
             self._token = None
             self._token_expires = 0.0
-            # Also clear from ConfigEntry so _load_token_from_entry() doesn't resurrect the dead token
+            # Also clear from ConfigEntry so _load_token_from_entry() does not resurrect
+            # the dead token on the next cycle. Without this, _ensure_token would reload
+            # the stale token from ConfigEntry, see it as "not expired", and skip _fetch_new_token.
             self.hass.config_entries.async_update_entry(
                 self._entry,
                 data={
@@ -336,7 +363,8 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
           3 = Delivered — delivered to device
           4 = Failed    — device rejected the command (persistent notification)
 
-        NOTE: This endpoint uses code=10000 for success (same as data/control endpoints; docs incorrectly state code=0).
+        NOTE: This endpoint returns code=10000 (same as data/control endpoints).
+        Official docs state code=0 — this is incorrect, verified by live testing.
         """
         _LOGGER.debug("SolaxCloud: Polling command result for requestId=%s", request_id)
 

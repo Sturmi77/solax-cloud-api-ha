@@ -81,7 +81,13 @@ STEP_REAUTH_SCHEMA = vol.Schema(
 
 
 class SolaxAuthError(Exception):
-    """Raised when SolaxCloud returns bad credentials (code != 0)."""
+    """Raised when SolaxCloud auth endpoint returns a non-zero code.
+
+    The auth endpoint always returns HTTP 200. Errors are indicated by the JSON 'code' field:
+      code=0     → success
+      code=10400 → invalid client_id / client_secret
+      code=10401 → username/password incorrect (OAuth2 flow only)
+    """
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -92,15 +98,26 @@ async def _fetch_token(client_id: str, client_secret: str) -> tuple[str, float]:
 
     NOTE: SolaxCloud always returns HTTP 200, even for auth errors.
     Actual errors are indicated by the JSON 'code' field:
-      - code=0     → success, 'access_token' present
-      - 10400      → "Bad client credentials" (invalid client_id / client_secret)
-      - other 1xx  → other API errors
+      code=0     → success; access_token present in result.access_token
+      code=10400 → bad credentials (invalid client_id / client_secret)
+
+    Response structure:
+      {
+        "code": 0,
+        "result": {
+          "access_token": "...",
+          "token_type": "bearer",
+          "expires_in": 2591999,
+          "scope": "...",
+          "grant_type": "client_credentials"
+        }
+      }
 
     Raises:
-        SolaxAuthError               — API returned an error code (bad credentials)
+        SolaxAuthError               — API returned non-zero code
         aiohttp.ClientResponseError  — unexpected HTTP-level error
         aiohttp.ClientError          — network / connection error
-        KeyError                     — unexpected response shape (missing access_token)
+        KeyError                     — unexpected response shape
     """
     payload = {
         "client_id": client_id,

@@ -46,14 +46,31 @@ EVC_WORKING_MODE_MAP = {
     3: "Green",
 }
 
-# API response codes
-API_SUCCESS_CODE = 10000          # data / control / poll endpoints
-API_AUTH_SUCCESS_CODE = 0         # auth endpoint
-API_RATE_LIMIT_CODE = 10200       # too many requests — back off
-API_TOKEN_EXPIRED_CODE = 10402    # token expired/invalid — bearer token rejected by data/control endpoints
+# API response codes — official meanings from Developer Portal Appendix 1
+# Auth endpoint uses code=0 for success; all other endpoints use code=10000
+API_SUCCESS_CODE = 10000          # data / control / poll endpoints — "Operation successful"
+API_AUTH_SUCCESS_CODE = 0         # auth endpoint only
+API_RATE_LIMIT_CODE = 10200       # "Operation abnormality" — observed as rate limit in live testing
+                                  # NOTE: Official docs list 10406 as the rate limit code.
+                                  # In practice, 10200 is what the API returns when rate-limited.
+API_TOKEN_EXPIRED_CODE = 10402    # "Request access_token authentication failed" — token invalidated externally
+
+# Full error code reference (Developer Portal Appendix 1):
+# 10000  Operation successful
+# 10001  Operation failed
+# 11500  System busy, please try again later
+# 10200  Operation abnormality (see message for details)  ← observed as rate limit in live testing
+# 10400  Request not authenticated
+# 10401  Username or password incorrect
+# 10402  Request access_token authentication failed       ← token invalidated externally
+# 10403  Interface has no access rights
+# 10404  Callback function not configured
+# 10405  API call quota exhausted
+# 10406  API call rate limit reached                      ← official rate limit code
+# 10500  User has no device data permission
 
 # Business types
-BUSINESS_TYPE_RESIDENTIAL = 1
+BUSINESS_TYPE_RESIDENTIAL = 1     # businessType=1 per Developer Portal — used for all EVC requests
 
 # Command result polling
 COMMAND_POLL_URL = "https://openapi-eu.solaxcloud.com/openapi/apiRequestLog/listByCondition"
