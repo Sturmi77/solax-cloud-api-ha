@@ -206,11 +206,21 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         code = data.get("code")
         if code == API_TOKEN_EXPIRED_CODE:
             _LOGGER.warning(
-                "SolaxCloud: Token expired/invalid (code=10402) — clearing token, will refresh on next update"
+                "SolaxCloud: Token expired/invalid (code=10402) — clearing token and ConfigEntry, "
+                "will fetch fresh token on next update"
             )
             self._token = None
             self._token_expires = 0.0
-            raise UpdateFailed("SolaxCloud: Token expired — will refresh on next update")
+            # Also clear from ConfigEntry so _load_token_from_entry() doesn't resurrect the dead token
+            self.hass.config_entries.async_update_entry(
+                self._entry,
+                data={
+                    **self._entry.data,
+                    CONF_ACCESS_TOKEN: None,
+                    CONF_TOKEN_EXPIRES: 0.0,
+                },
+            )
+            raise UpdateFailed("SolaxCloud: Token expired — will fetch fresh token on next update")
         if code != API_SUCCESS_CODE:
             msg = data.get("msg", "unknown error")
             _LOGGER.error("SolaxCloud API error: %s (code=%s)", msg, code)
@@ -268,10 +278,18 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         code = data.get("code")
         if code == API_TOKEN_EXPIRED_CODE:
             _LOGGER.warning(
-                "SolaxCloud: Token expired/invalid (code=10402) — clearing token, command not sent"
+                "SolaxCloud: Token expired/invalid (code=10402) — clearing token and ConfigEntry, command not sent"
             )
             self._token = None
             self._token_expires = 0.0
+            self.hass.config_entries.async_update_entry(
+                self._entry,
+                data={
+                    **self._entry.data,
+                    CONF_ACCESS_TOKEN: None,
+                    CONF_TOKEN_EXPIRES: 0.0,
+                },
+            )
             raise HomeAssistantError(
                 "SolaxCloud: Token expired — please retry the command in a few seconds"
             )
