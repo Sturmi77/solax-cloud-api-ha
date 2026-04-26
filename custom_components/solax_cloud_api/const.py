@@ -53,6 +53,7 @@ API_AUTH_SUCCESS_CODE = 0         # auth endpoint only
 API_RATE_LIMIT_CODE = 10200       # "Operation abnormality" — observed as rate limit in live testing
                                   # NOTE: Official docs list 10406 as the rate limit code.
                                   # In practice, 10200 is what the API returns when rate-limited.
+API_RATE_LIMIT_CODE_OFFICIAL = 10406  # "API call rate limit reached" — official docs code
 API_TOKEN_EXPIRED_CODE = 10402    # "Request access_token authentication failed" — token invalidated externally
 
 # Full error code reference (Developer Portal Appendix 1):
@@ -71,6 +72,9 @@ API_TOKEN_EXPIRED_CODE = 10402    # "Request access_token authentication failed"
 
 # Business types
 BUSINESS_TYPE_RESIDENTIAL = 1     # businessType=1 per Developer Portal — used for all EVC requests
+
+# Client-side command rate-limit guard
+COMMAND_MIN_INTERVAL = 6.0  # seconds — conservative guard for 10 commands/min API limit
 
 # Command result polling
 COMMAND_POLL_URL = "https://openapi-eu.solaxcloud.com/openapi/apiRequestLog/listByCondition"

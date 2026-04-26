@@ -13,7 +13,9 @@ Key design decisions:
 - No update_listener registered — add_update_listener() fires on ANY async_update_entry()
   call, including the coordinator's internal token saves. A listener that reloads the
   integration would cause a reload loop on every token persistence.
-- API_RATE_LIMIT_CODE = 10200 used in practice; official docs list 10406. See const.py.
+- API rate-limit codes 10200 (observed) and 10406 (official) both handled explicitly.
+  Commands raise HomeAssistantError; data polls raise UpdateFailed. See const.py.
+- Client-side command guard: COMMAND_MIN_INTERVAL enforced before each API command call.
 
 See ARCHITECTURE.md §6 and SECURITY.md §2 for details.
 """
@@ -34,8 +36,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     API_AUTH_SUCCESS_CODE,
     API_RATE_LIMIT_CODE,
+    API_RATE_LIMIT_CODE_OFFICIAL,
     API_SUCCESS_CODE,
     API_TOKEN_EXPIRED_CODE,
+    COMMAND_MIN_INTERVAL,
     COMMAND_POLL_DELAY,
     COMMAND_POLL_URL,
     COMMAND_STATUS_MAP,
@@ -78,6 +82,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._client_secret: str = entry.data[CONF_CLIENT_SECRET]
         self._token: str | None = None
         self._token_expires: float = 0.0
+        self._last_command_time: float = 0.0
 
     # ── Token Management ─────────────────────────────────────────────────────
 
@@ -249,6 +254,11 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 },
             )
             raise UpdateFailed("SolaxCloud: Token expired — will fetch fresh token on next update")
+        if code in (API_RATE_LIMIT_CODE, API_RATE_LIMIT_CODE_OFFICIAL):
+            _LOGGER.warning("SolaxCloud: Rate limit exceeded during data poll (code=%s)", code)
+            raise UpdateFailed(
+                "SolaxCloud: Rate limit exceeded (max 10 requests/min) — will retry on next interval"
+            )
         if code != API_SUCCESS_CODE:
             msg = data.get("msg", "unknown error")
             _LOGGER.error("SolaxCloud API error: %s (code=%s)", msg, code)
@@ -278,6 +288,15 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             HomeAssistantError  — on API-level error (code != 10000)
             aiohttp.ClientError — on network error
         """
+        # Client-side rate-limit guard — reject early if last command was too recent
+        now = time.monotonic()
+        elapsed = now - self._last_command_time
+        if elapsed < COMMAND_MIN_INTERVAL:
+            raise HomeAssistantError(
+                f"SolaxCloud: Rate limit — please wait {COMMAND_MIN_INTERVAL - elapsed:.0f}s before sending another command"
+            )
+        self._last_command_time = now
+
         await self._ensure_token()
 
         headers = {
@@ -321,9 +340,9 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             raise HomeAssistantError(
                 "SolaxCloud: Token expired — please retry the command in a few seconds"
             )
-        if code == API_RATE_LIMIT_CODE:
+        if code in (API_RATE_LIMIT_CODE, API_RATE_LIMIT_CODE_OFFICIAL):
             msg = "Rate limit exceeded (max 10 commands/min) — please wait before retrying"
-            _LOGGER.warning("SolaxCloud: %s", msg)
+            _LOGGER.warning("SolaxCloud: %s (code=%s)", msg, code)
             raise HomeAssistantError(f"SolaxCloud: {msg}")
         if code != API_SUCCESS_CODE:
             msg = data.get("message", "unknown error")
