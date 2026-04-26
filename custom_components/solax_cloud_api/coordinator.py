@@ -1,10 +1,12 @@
 """DataUpdateCoordinator with automatic OAuth2 token lifecycle management.
 
-Key design:
+Key design decisions:
+- config_entry passed explicitly to super().__init__() — required from HA 2026.8+
 - Token persisted in ConfigEntry.data — survives HA restart without new API call
 - _ensure_token() called before every update — only fetches when needed (1h buffer)
-- Single config entry enforced — prevents parallel token invalidation
+- Single config entry enforced via manifest.json — prevents parallel token invalidation
 - Never logs full token — only first 4 chars for debugging
+- 401 response → triggers re-auth flow (user sees notification in HA UI)
 
 See ARCHITECTURE.md §6 and SECURITY.md §2 for details.
 """
@@ -40,15 +42,20 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class SolaxCoordinator(DataUpdateCoordinator):
+class SolaxCoordinator(DataUpdateCoordinator[dict]):
     """Coordinator for SolaxCloud API — manages token lifecycle and data fetching."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Initialise the coordinator."""
+        """Initialise the coordinator.
+
+        config_entry is passed explicitly to avoid the ContextVar deprecation
+        warning introduced in HA 2026.3 (breaking in 2026.8).
+        """
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
+            config_entry=entry,                          # explicit — required from 2026.8
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
         )
         self._entry = entry
@@ -60,23 +67,29 @@ class SolaxCoordinator(DataUpdateCoordinator):
     # ── Token Management ─────────────────────────────────────────────────────
 
     async def _load_token_from_entry(self) -> None:
-        """Load token and expiry from ConfigEntry (populated by config flow or previous fetch)."""
+        """Load token and expiry from ConfigEntry.
+
+        Called once on first update. Subsequent restarts skip the token endpoint
+        entirely as long as the stored token is still valid.
+        """
         self._token = self._entry.data.get(CONF_ACCESS_TOKEN)
         self._token_expires = self._entry.data.get(CONF_TOKEN_EXPIRES, 0.0)
         if self._token:
+            remaining_h = max(0, self._token_expires - time.time()) / 3600
             _LOGGER.debug(
-                "Loaded token from ConfigEntry: %s... (expires in %.0f hours)",
+                "SolaxCloud: Token loaded from ConfigEntry (%s..., %.0fh remaining)",
                 self._token[:4],
-                max(0, self._token_expires - time.time()) / 3600,
+                remaining_h,
             )
 
     async def _fetch_new_token(self) -> None:
-        """Fetch a new token from the SolaxCloud API and persist it in ConfigEntry.
+        """Fetch a new token from the SolaxCloud API and persist immediately.
 
-        WARNING: Each call immediately invalidates the previously active token.
-        Only call this when genuinely needed (token missing or within refresh buffer).
+        ⚠️ WARNING: Each call immediately invalidates the previous active token.
+        Only call this when the token is genuinely missing or within TOKEN_REFRESH_BUFFER
+        of expiry. Never call from background tasks or polling loops directly.
         """
-        _LOGGER.info("SolaxCloud API: Fetching new access token")
+        _LOGGER.info("SolaxCloud: Fetching new access token")
         payload = {
             "client_id": self._client_id,
             "client_secret": self._client_secret,
@@ -85,16 +98,28 @@ class SolaxCoordinator(DataUpdateCoordinator):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(TOKEN_URL, data=payload) as resp:
+                    if resp.status == 401:
+                        _LOGGER.error(
+                            "SolaxCloud: Token fetch returned 401 — credentials invalid"
+                        )
+                        self._entry.async_start_reauth(self.hass)
+                        raise UpdateFailed("Invalid credentials — re-authentication required")
                     resp.raise_for_status()
                     result = await resp.json()
         except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Token fetch failed: {err}") from err
+            raise UpdateFailed(f"SolaxCloud: Token fetch failed: {err}") from err
 
-        self._token = result["access_token"]
+        access_token = result.get("access_token")
+        if not access_token:
+            raise UpdateFailed(
+                f"SolaxCloud: Token response missing access_token: {result}"
+            )
+
+        self._token = access_token
         expires_in = result.get("expires_in", DEFAULT_TOKEN_LIFETIME)
         self._token_expires = time.time() + expires_in
 
-        # Persist — next HA restart will reuse this token without a new API call
+        # Persist to ConfigEntry — survives HA restart without a new API call
         self.hass.config_entries.async_update_entry(
             self._entry,
             data={
@@ -104,13 +129,19 @@ class SolaxCoordinator(DataUpdateCoordinator):
             },
         )
         _LOGGER.info(
-            "SolaxCloud API: New token stored (%s...), valid for %.1f days",
+            "SolaxCloud: New token persisted (%s..., valid %.1f days)",
             self._token[:4],
             expires_in / 86400,
         )
 
     async def _ensure_token(self) -> None:
-        """Ensure a valid token is available — fetch only when necessary."""
+        """Guarantee a valid token before each API call.
+
+        Logic:
+          1. If token not in memory → load from ConfigEntry (first call after restart)
+          2. If still None or within TOKEN_REFRESH_BUFFER of expiry → fetch new token
+          3. Otherwise → reuse existing token (no API call)
+        """
         if self._token is None:
             await self._load_token_from_entry()
 
@@ -123,7 +154,11 @@ class SolaxCoordinator(DataUpdateCoordinator):
     # ── Data Fetching ────────────────────────────────────────────────────────
 
     async def _async_update_data(self) -> dict:
-        """Fetch EVC realtime data from SolaxCloud API."""
+        """Fetch EVC realtime data — called every DEFAULT_SCAN_INTERVAL seconds.
+
+        Raises UpdateFailed on any error so HA marks the integration unavailable
+        and retries on the next interval.
+        """
         await self._ensure_token()
 
         evc_sn = self._entry.data.get(CONF_EVC_SN)
@@ -136,19 +171,36 @@ class SolaxCoordinator(DataUpdateCoordinator):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(DATA_URL, params=params, headers=headers) as resp:
+                async with session.get(
+                    DATA_URL, params=params, headers=headers
+                ) as resp:
+                    if resp.status == 401:
+                        # Token was invalidated externally (e.g. another app fetched a new token)
+                        _LOGGER.warning(
+                            "SolaxCloud: Data request returned 401 — token invalidated, "
+                            "will fetch new token on next update"
+                        )
+                        self._token = None          # force re-fetch on next cycle
+                        self._token_expires = 0.0
+                        raise UpdateFailed("Token invalidated — will refresh on next update")
                     resp.raise_for_status()
                     data = await resp.json()
         except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Data fetch failed: {err}") from err
+            raise UpdateFailed(f"SolaxCloud: Data fetch failed: {err}") from err
 
-        if data.get("code") != API_SUCCESS_CODE:
-            raise UpdateFailed(
-                f"SolaxCloud API error: {data.get('msg')} (code={data.get('code')})"
-            )
+        code = data.get("code")
+        if code != API_SUCCESS_CODE:
+            msg = data.get("msg", "unknown error")
+            _LOGGER.error("SolaxCloud API error: %s (code=%s)", msg, code)
+            raise UpdateFailed(f"SolaxCloud API error: {msg} (code={code})")
 
         result = data.get("result")
         if not result:
-            raise UpdateFailed("SolaxCloud API returned empty result list")
+            raise UpdateFailed("SolaxCloud: API returned empty result list")
 
+        _LOGGER.debug(
+            "SolaxCloud: EVC data received — status=%s power=%sW",
+            result[0].get("deviceStatus"),
+            result[0].get("chargingPower"),
+        )
         return result[0]
