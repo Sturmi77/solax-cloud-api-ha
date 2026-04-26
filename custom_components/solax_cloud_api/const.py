@@ -26,12 +26,22 @@ DEVICE_TYPE_INVERTER = 1
 DEVICE_TYPE_BATTERY = 2
 DEVICE_TYPE_EVC = 4
 
-# EVC status mapping
+# EVC deviceStatus mapping (from X3-EVC User Manual + Developer API docs)
 EVC_STATUS_MAP = {
-    0: "Waiting",
-    1: "Charging",
-    2: "Finished",
-    3: "Error",
+    0: "Waiting",      # Idle — no EV connected or ready
+    1: "Charging",     # EV actively charging
+    2: "Complete",     # Charging finished (EV full or target reached)
+    3: "Fault",        # Error state — fault light on
+    4: "Unavailable",  # Remote updating / not available
+    5: "Stop",         # EV connected but not charging (manually stopped)
+}
+
+# EVC deviceWorkingMode mapping (charging mode)
+EVC_WORKING_MODE_MAP = {
+    0: "Stop",
+    1: "Fast",
+    2: "ECO",
+    3: "Green",
 }
 
 # API success code
