@@ -103,10 +103,11 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         except aiohttp.ClientError as err:
             raise UpdateFailed(f"SolaxCloud: Token fetch failed: {err}") from err
 
-        # NOTE: SolaxCloud always returns HTTP 200 — auth errors indicated by
-        # application-level 'code' field (e.g. 10400 = bad credentials).
+        # Auth endpoint: code=0 on success, code=10400 on bad credentials.
+        # access_token is nested inside result.result (not result directly).
         api_code = result.get("code")
-        if api_code != 200:  # noqa: PLR2004
+        token_data = result.get("result")
+        if api_code != 0 or not token_data:  # noqa: PLR2004
             msg = result.get("message", "Unknown error")
             _LOGGER.error(
                 "SolaxCloud: Token API error — %s (code=%s) — triggering re-auth",
@@ -116,14 +117,14 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             self._entry.async_start_reauth(self.hass)
             raise UpdateFailed(f"Invalid credentials (code={api_code}) — re-authentication required")
 
-        access_token = result.get("access_token")
+        access_token = token_data.get("access_token")
         if not access_token:
             raise UpdateFailed(
-                f"SolaxCloud: Token response missing access_token: {result}"
+                f"SolaxCloud: Token response missing access_token: {token_data}"
             )
 
         self._token = access_token
-        expires_in = result.get("expires_in", DEFAULT_TOKEN_LIFETIME)
+        expires_in = token_data.get("expires_in", DEFAULT_TOKEN_LIFETIME)
         self._token_expires = time.time() + expires_in
 
         # Persist to ConfigEntry — survives HA restart without a new API call

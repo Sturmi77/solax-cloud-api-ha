@@ -112,17 +112,19 @@ async def _fetch_token(client_id: str, client_secret: str) -> tuple[str, float]:
             resp.raise_for_status()
             result = await resp.json()
 
-    # API always returns HTTP 200 — check application-level code
+    # Auth endpoint returns code=0 on success, code=10400 on bad credentials.
+    # (Data endpoint uses code=10000 for success — different code space.)
     api_code = result.get("code")
-    if api_code != 200:  # noqa: PLR2004
+    token_data = result.get("result")
+    if api_code != 0 or not token_data:  # noqa: PLR2004
         msg = result.get("message", "Unknown error")
         _LOGGER.warning(
             "SolaxCloud token API error: %s (code=%s)", msg, api_code
         )
         raise SolaxAuthError(f"API error {api_code}: {msg}")
 
-    token: str = result["access_token"]
-    expires_in: int = result.get("expires_in", DEFAULT_TOKEN_LIFETIME)
+    token: str = token_data["access_token"]
+    expires_in: int = token_data.get("expires_in", DEFAULT_TOKEN_LIFETIME)
     return token, time.time() + expires_in
 
 
