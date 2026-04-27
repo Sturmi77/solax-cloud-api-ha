@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
+from copy import deepcopy
 from datetime import timedelta
 
 import aiohttp
@@ -61,6 +62,30 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _is_rate_limited_response(resp: dict) -> bool:
+    """Return True when Solax response indicates API throttling/rate limit.
+
+    Checks both numeric codes (10200, 10406) and exception message strings,
+    as Solax sometimes returns rate-limit errors with undocumented codes.
+    """
+    if not isinstance(resp, dict):
+        return False
+    code = resp.get("code")
+    if code in (API_RATE_LIMIT_CODE, API_RATE_LIMIT_CODE_OFFICIAL):
+        return True
+    # String-based fallback for undocumented rate-limit responses
+    exception_msg = str(resp.get("exception", "")).lower()
+    rate_limit_markers = (
+        "rate limit",
+        "maximum call threshold",
+        "suspend the request",
+        "current minute > threshold",
+        "within the current minute",
+        "too many requests",
+    )
+    return any(marker in exception_msg for marker in rate_limit_markers)
+
+
 class SolaxCoordinator(DataUpdateCoordinator[dict]):
     """Coordinator for SolaxCloud API — manages token lifecycle and data fetching."""
 
@@ -83,6 +108,8 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._token: str | None = None
         self._token_expires: float = 0.0
         self._last_command_time: float = 0.0
+        # Raw (unfiltered) API response — stored for diagnostics export
+        self.raw_api_response: dict | None = None
 
     # ── Token Management ─────────────────────────────────────────────────────
 
@@ -254,8 +281,13 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 },
             )
             raise UpdateFailed("SolaxCloud: Token expired — will fetch fresh token on next update")
-        if code in (API_RATE_LIMIT_CODE, API_RATE_LIMIT_CODE_OFFICIAL):
-            _LOGGER.warning("SolaxCloud: Rate limit exceeded during data poll (code=%s)", code)
+        if _is_rate_limited_response(data):
+            exception_msg = data.get("exception", "")
+            _LOGGER.warning(
+                "SolaxCloud: Rate limit exceeded during data poll (code=%s, exception=%s)",
+                code,
+                exception_msg or "n/a",
+            )
             raise UpdateFailed(
                 "SolaxCloud: Rate limit exceeded (max 10 requests/min) — will retry on next interval"
             )
@@ -273,6 +305,8 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             result[0].get("deviceStatus"),
             result[0].get("chargingPower"),
         )
+        # Cache raw response for diagnostics
+        self.raw_api_response = deepcopy(data) if isinstance(data, dict) else None
         return result[0]
 
     async def async_send_evc_command(self, url: str, payload: dict) -> dict:
@@ -340,9 +374,15 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             raise HomeAssistantError(
                 "SolaxCloud: Token expired — please retry the command in a few seconds"
             )
-        if code in (API_RATE_LIMIT_CODE, API_RATE_LIMIT_CODE_OFFICIAL):
+        if _is_rate_limited_response(data):
+            exception_msg = data.get("exception", "")
             msg = "Rate limit exceeded (max 10 commands/min) — please wait before retrying"
-            _LOGGER.warning("SolaxCloud: %s (code=%s)", msg, code)
+            _LOGGER.warning(
+                "SolaxCloud: %s (code=%s, exception=%s)",
+                msg,
+                code,
+                exception_msg or "n/a",
+            )
             raise HomeAssistantError(f"SolaxCloud: {msg}")
         if code != API_SUCCESS_CODE:
             msg = data.get("message", "unknown error")

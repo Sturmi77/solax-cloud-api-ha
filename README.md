@@ -182,6 +182,23 @@ statistics" for the affected period, then re-enable.
 
 ---
 
+## Diagnostics
+
+The integration supports Home Assistant's built-in diagnostics export.
+
+**How to export:**
+Settings → Devices & Services → SolaxCloud API → Download Diagnostics
+
+The export includes:
+- Integration config (token masked, EVC serial number masked)
+- Coordinator state (last update success, poll interval)
+- Raw API response (useful for debugging missing or unexpected sensor values)
+- List of coordinator data keys
+
+Token and serial numbers are automatically masked before export — safe to share in bug reports.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE)

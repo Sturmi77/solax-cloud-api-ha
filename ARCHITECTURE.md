@@ -392,6 +392,22 @@ custom_components/solax_cloud_api/
 | `code=10402` self-healing | Token invalidated externally causes 10402; coordinator auto-recovers on next poll (ConfigEntry cleared, fresh token fetched) | None — fully automatic |
 | No update_listener | Registering would cause reload loop on token saves | Re-add in Issue #7 when options flow separates token saves from options updates |
 
+### Rate-Limit Detection
+
+Rate limits are detected via two mechanisms:
+1. **Numeric codes** — `10200` (observed) and `10406` (official docs)
+2. **String matching** — exception messages containing `"rate limit"`, `"maximum call threshold"`, `"suspend the request"` etc. catch undocumented variants
+
+The client-side guard (`COMMAND_MIN_INTERVAL = 6.0s`) prevents redundant command calls when the limit is already known to be exceeded.
+
+### Diagnostics
+
+`diagnostics.py` implements HA's native diagnostics interface. On export:
+- Token is fully redacted
+- EVC serial number is masked (first 3 + last 3 chars)
+- Raw API response is included for debugging null/missing sensor values
+- Coordinator data keys are listed to verify which fields are being polled
+
 ### Post-Command Refresh
 
 After sending an EVC command, the integration does NOT immediately refresh coordinator data.
