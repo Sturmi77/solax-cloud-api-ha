@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SolaxCloud API",
+        "description": "Geben Sie Ihre Zugangsdaten aus dem SolaxCloud-Entwicklerportal ein. Diese finden Sie im [Entwicklerportal]({developer_portal_url}) unter Ihren Anwendungseinstellungen.",
+        "data": {
+          "client_id": "Client-ID",
+          "client_secret": "Client-Secret",
+          "evc_sn": "Seriennummer der EV-Ladestation"
+        },
+        "data_description": {
+          "client_id": "Die Client-ID Ihrer SolaxCloud-Entwickleranwendung.",
+          "client_secret": "Das Client-Secret Ihrer SolaxCloud-Entwickleranwendung. Wird wie ein Passwort behandelt und niemals weitergegeben.",
+          "evc_sn": "Die Geräte-Seriennummer (deviceSn) Ihrer EV-Ladestation. Zu finden im SolaxCloud-Entwicklerportal unter Gerät → Geräteliste."
+        }
+      },
+      "reauth_confirm": {
+        "title": "SolaxCloud API erneut authentifizieren",
+        "description": "Anwendung **{client_id}** erneut authentifizieren. Geben Sie das neue Client-Secret aus Ihrem SolaxCloud-Entwicklerportal ein.",
+        "data": {
+          "client_secret": "Client-Secret"
+        },
+        "data_description": {
+          "client_secret": "Das neue Client-Secret nach der Rotation im Entwicklerportal."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zur SolaxCloud API fehlgeschlagen. Prüfen Sie Ihre Internetverbindung.",
+      "invalid_auth": "Ungültige Anmeldedaten. Prüfen Sie Ihre Client-ID und Ihr Client-Secret im Entwicklerportal."
+    },
+    "abort": {
+      "already_configured": "SolaxCloud API ist bereits konfiguriert. Es wird nur eine Instanz unterstützt.",
+      "reauth_successful": "Erneute Authentifizierung erfolgreich. Die Integration wurde neu geladen."
+    }
+  }
+}
