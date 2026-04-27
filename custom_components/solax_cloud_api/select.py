@@ -67,8 +67,8 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
     """Select entity to control the EV Charger work mode.
 
     Current state is read from coordinator data (deviceWorkingMode field).
-    Writing sends a command to the SolaxCloud API and then requests a
-    coordinator refresh so the UI reflects the new state immediately.
+    Writing sends a command to the SolaxCloud API; state updates arrive
+    on the next regular poll cycle.
     """
 
     _attr_has_entity_name = True
@@ -135,8 +135,9 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
             EVC_CONTROL_WORK_MODE_URL, payload
         )
 
-        # Refresh coordinator so sensor + select state update immediately
-        await self.coordinator.async_request_refresh()
+        # State will update on the next regular poll (DEFAULT_SCAN_INTERVAL)
+        # Do NOT call async_request_refresh() here — it triggers an immediate API call
+        # that hits the rate limit when combined with the command call above.
 
 
 class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):

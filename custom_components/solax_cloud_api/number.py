@@ -160,4 +160,6 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
             EVC_CONTROL_WORK_MODE_URL, payload
         )
 
-        await self.coordinator.async_request_refresh()
+        # State will update on the next regular poll (DEFAULT_SCAN_INTERVAL)
+        # Do NOT call async_request_refresh() here — it triggers an immediate API call
+        # that hits the rate limit when combined with the command call above.

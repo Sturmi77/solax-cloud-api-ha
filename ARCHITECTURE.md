@@ -391,3 +391,10 @@ custom_components/solax_cloud_api/
 | HA offline >30 days | Token expired — cannot be refreshed | `_ensure_token()` auto-fetches new token on next HA start |
 | `code=10402` self-healing | Token invalidated externally causes 10402; coordinator auto-recovers on next poll (ConfigEntry cleared, fresh token fetched) | None — fully automatic |
 | No update_listener | Registering would cause reload loop on token saves | Re-add in Issue #7 when options flow separates token saves from options updates |
+
+### Post-Command Refresh
+
+After sending an EVC command, the integration does NOT immediately refresh coordinator data.
+Calling `async_request_refresh()` directly after a command triggers a second API call within
+milliseconds of the first, which reliably hits the SolaxCloud rate limit (code 10200).
+State updates arrive on the next regular poll (every 300 seconds).
