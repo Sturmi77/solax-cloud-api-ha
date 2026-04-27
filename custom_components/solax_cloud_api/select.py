@@ -86,16 +86,22 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_work_mode_select"
         self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
+        self._attr_current_option: str | None = None  # optimistic: set locally after command
 
     @property
     def current_option(self) -> str | None:
-        """Return current work mode from latest coordinator data."""
+        """Return current work mode.
+
+        Returns the optimistic (locally cached) value immediately after a command,
+        falling back to the coordinator data on the next poll.
+        """
+        if self._attr_current_option is not None:
+            return self._attr_current_option
         if self.coordinator.data is None:
             return None
         raw = self.coordinator.data.get("deviceWorkingMode")
         if raw is None:
             return None
-        # API returns int; EVC_WORKING_MODE_MAP maps int → string
         return EVC_WORKING_MODE_MAP.get(raw)
 
     @property
@@ -135,9 +141,14 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
             EVC_CONTROL_WORK_MODE_URL, payload
         )
 
-        # State will update on the next regular poll (DEFAULT_SCAN_INTERVAL)
-        # Do NOT call async_request_refresh() here — it triggers an immediate API call
-        # that hits the rate limit when combined with the command call above.
+        # Optimistic update — show new state immediately without waiting for next poll
+        self._attr_current_option = option
+        self.async_write_ha_state()
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on coordinator update so real API value takes over."""
+        self._attr_current_option = None
+        super()._handle_coordinator_update()
 
 
 class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):

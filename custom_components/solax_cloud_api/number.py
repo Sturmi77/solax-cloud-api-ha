@@ -83,6 +83,7 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_charging_current"
         self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
+        self._optimistic_value: float | None = None  # set locally after command for immediate UI feedback
 
     def _current_mode_name(self) -> str | None:
         """Return current work mode name (Stop/Fast/ECO/Green) or None."""
@@ -119,10 +120,16 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
 
     @property
     def native_value(self) -> float | None:
-        """Current value is not reported by API — return None (unknown)."""
-        # The API does not include currentGear in realtime_data responses.
-        # The entity remains writable but shows unknown state until the user sets it.
-        return None
+        """Return current charging current.
+
+        Returns the optimistic (locally cached) value immediately after a command,
+        falling back to coordinator data on the next poll.
+        """
+        if self._optimistic_value is not None:
+            return self._optimistic_value
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.get("currentGear")
 
     async def async_set_native_value(self, value: float) -> None:
         """Send charging current command — snaps to nearest valid gear."""
@@ -160,6 +167,11 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
             EVC_CONTROL_WORK_MODE_URL, payload
         )
 
-        # State will update on the next regular poll (DEFAULT_SCAN_INTERVAL)
-        # Do NOT call async_request_refresh() here — it triggers an immediate API call
-        # that hits the rate limit when combined with the command call above.
+        # Optimistic update — show new value immediately without waiting for next poll
+        self._optimistic_value = float(target_gear)
+        self.async_write_ha_state()
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on coordinator update so real API value takes over."""
+        self._optimistic_value = None
+        super()._handle_coordinator_update()
