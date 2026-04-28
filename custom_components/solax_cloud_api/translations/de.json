@@ -25,14 +25,6 @@
           "client_secret": "Das neue Client-Secret nach der Rotation im Entwicklerportal."
         }
       }
-    },
-    "error": {
-      "cannot_connect": "Verbindung zur SolaxCloud API fehlgeschlagen. Prüfen Sie Ihre Internetverbindung.",
-      "invalid_auth": "Ungültige Anmeldedaten. Prüfen Sie Ihre Client-ID und Ihr Client-Secret im Entwicklerportal."
-    },
-    "abort": {
-      "already_configured": "SolaxCloud API ist bereits konfiguriert. Es wird nur eine Instanz unterstützt.",
-      "reauth_successful": "Erneute Authentifizierung erfolgreich. Die Integration wurde neu geladen."
     }
   }
 }
