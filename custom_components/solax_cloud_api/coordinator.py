@@ -478,9 +478,9 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
 
         # Schedule delivery confirmation poll — non-blocking
         if request_id:
-            self.hass.loop.call_later(
+            self.hass.async_call_later(
                 COMMAND_POLL_DELAY,
-                lambda: self.hass.async_create_task(
+                lambda _now: self.hass.async_create_task(
                     self.async_poll_command_result(request_id)
                 ),
             )
