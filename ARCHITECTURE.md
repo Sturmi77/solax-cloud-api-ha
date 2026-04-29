@@ -173,6 +173,8 @@ HA Start
 | 1-hour refresh buffer | Avoids token expiry mid-polling-cycle |
 | `single_config_entry: true` | Enforces one-token-per-application constraint at the HA level |
 | `_ensure_token()` called before every data fetch | Guarantees token validity without a separate refresh loop |
+| `_postpone_poll_until` timestamp | Prevents data poll from colliding with a command in the same burst window — replaces earlier `update_interval` manipulation which was fragile |
+| `asyncio.sleep` task for command poll | Command result is polled via `asyncio.sleep` + `async_create_task` — `hass.loop.call_later` and `hass.async_call_later` are not used (incompatible with HA async model) |
 
 ### Token Invalidation Handling
 
@@ -255,7 +257,78 @@ class SolaxCoordinator(DataUpdateCoordinator):
 
 ---
 
-## 7. Sensor Device Classes — Critical Analysis
+## 7. EVC Control Commands
+
+### Endpoints
+
+| Action | URL | Key Payload Fields |
+|--------|-----|--------------------|
+| Set Work Mode | `POST /openapi/v2/device/evc_control/set_evc_work_mode` | `snList`, `workMode`, `current` (ECO/Green only), `businessType` |
+| Set Start Mode | `POST /openapi/v2/device/evc_control/set_evc_start_mode` | `snList`, `startMode`, `businessType` |
+| Set Charge Scene | `POST /openapi/v2/device/evc_control/set_charge_scene` | `snList`, `chargerScene`, `businessType` |
+
+### Work Mode Payload
+
+```json
+{
+  "snList": ["C32203J3501037"],
+  "workMode": 2,
+  "current": 16,
+  "businessType": 1
+}
+```
+
+**workMode values:** `0=Stop`, `1=Fast`, `2=ECO`, `3=Green`
+
+**`current` field** (⚠️ critical — often misnamed in third-party docs):
+- The API field is **`"current"`** — NOT `"currentGear"`
+- Only required for ECO (`workMode=2`) and Green (`workMode=3`)
+- Not sent for Stop or Fast
+- Valid values: ECO → `[6, 10, 16, 20, 25]` A; Green → `[3, 6]` A
+
+### Command Delivery Architecture
+
+Commands go through a two-phase delivery:
+
+```
+1. POST control endpoint → code=10000 + requestId
+2. asyncio.sleep(COMMAND_POLL_DELAY=5s)
+3. POST /openapi/apiRequestLog/listByCondition {requestId}
+   → status: 1=Pending, 2=Success, 3=Delivered, 4=Failed
+4. On status=4: fire persistent HA notification
+```
+
+**Why `asyncio.sleep` instead of `hass.async_call_later`:**  
+`hass.loop.call_later` does not exist in modern HA. `hass.async_call_later` requires
+a specific callback signature and does not integrate cleanly with coroutines.
+The correct pattern is `hass.async_create_task(async_sleep_then_poll())`.
+
+### Poll-Skip Guard
+
+After a command is sent, `_postpone_poll_until` is set to `time.monotonic() + COMMAND_MIN_INTERVAL`.  
+`_async_update_data` skips the API call and returns cached data until the timestamp has passed.  
+This prevents poll + command collision in the same API burst window.
+
+> **Previous approach (removed):** Temporarily modifying `self.update_interval` via `setattr`
+> inside an `async_call_later` lambda. This failed because `update_interval` is a HA property,
+> not a plain attribute — `setattr` raised `AttributeError`.
+
+### Rate Limit Handling
+
+| Code | Official meaning | Handling |
+|------|-----------------|----------|
+| `10200` | "Operation abnormality — see message field" | **Not a rate limit.** Logs the full `message` and `exception` fields verbatim, raises `HomeAssistantError` with the real Solax message |
+| `10406` | "API call rate limit reached" | True rate limit — retry with exponential backoff (15s, 30s, max 3 attempts) |
+
+> **⚠️ Common misconception:** Early versions treated `code=10200` as a rate limit based on
+> observed behaviour. Per Solax Developer Portal Appendix 1, `10200` is a generic
+> "Operation abnormality" code whose real cause is in the `message` field.
+> `10406` is the only official rate-limit code. Treating `10200` as a rate limit and
+> silently retrying masked real errors (e.g. wrong payload field names).
+
+---
+
+## 8. Sensor Device Classes — Critical Analysis
 
 ### Energy Dashboard Requirements
 
@@ -269,34 +342,6 @@ Per [HA Developer Docs — Sensor Entity](https://developers.home-assistant.io/d
 | Status / text enum | none | none | — | ❌ |
 
 > `device_class: ENERGY` combined with `state_class: MEASUREMENT` is **invalid** and produces a HA log warning. ENERGY sensors must use `TOTAL` or `TOTAL_INCREASING`.
-
-### Sensor-by-Sensor Rationale
-
-#### `deviceStatus` — Charging Status
-- No `device_class`, no `state_class` — correct
-- Mapped to human-readable string: `{0: "Waiting", 1: "Charging", 2: "Finished", 3: "Error"}`
-- Use in automations via state comparison; not relevant for statistics
-
-#### `chargingPower` — Charging Power
-- `device_class: POWER`, `state_class: MEASUREMENT`, unit: **`W`** (not kW)
-- API delivers Watts for `businessType=1` — pass through directly; HA handles UI conversion
-- Usable directly in Energy Dashboard as "Individual Device" per [HA Energy docs](https://www.home-assistant.io/docs/energy/individual-devices/)
-
-#### `totalChargeEnergy` — Total Charge Energy ⭐
-- `device_class: ENERGY`, `state_class: TOTAL_INCREASING`, unit: `kWh`
-- Monotonically increasing counter — **primary sensor for Energy Dashboard**
-- Verified value: 8739.8 kWh
-- ⚠️ If device is replaced or counter resets (firmware), HA will flag an anomaly. Mitigation: switch to `TOTAL` with explicit `last_reset` in that scenario
-
-#### `chargingEnergyThisSession` — Session Energy
-- `device_class: ENERGY`, unit: `kWh`
-- **`state_class: TOTAL`** (not `TOTAL_INCREASING`) — resets to 0 at session start
-- `last_reset` attribute should be set when `chargingEnergyThisSession` drops (new session detected)
-- Not useful for Energy Dashboard cumulative tracking; suitable for dashboard cards showing current session
-
-#### `l1Current`, `l2Current`, `l3Current` — Phase Currents
-- `device_class: CURRENT`, `state_class: MEASUREMENT`, unit: `A`
-- No Energy Dashboard relevance; useful for automations (e.g., load balancing)
 
 ### Final Sensor Table
 
@@ -312,7 +357,7 @@ Per [HA Developer Docs — Sensor Entity](https://developers.home-assistant.io/d
 
 ---
 
-## 8. `config_flow.py` Design
+## 9. `config_flow.py` Design
 
 ### Initial Setup Flow
 
@@ -341,7 +386,7 @@ Token fetch fails with 401 / invalid credentials
 
 ---
 
-## 9. `manifest.json`
+## 10. `manifest.json`
 
 ```json
 {
@@ -362,7 +407,7 @@ Token fetch fails with 401 / invalid credentials
 
 ---
 
-## 10. Phase 2 / 3 Extension Path
+## 11. Phase 2 / 3 Extension Path
 
 The `coordinator.py` is designed to be device-agnostic. In Phase 2+, the coordinator will:
 
@@ -380,25 +425,17 @@ custom_components/solax_cloud_api/
 
 ---
 
-## 11. Known Limitations
+## 12. Known Limitations
 
 | Item | Description | Mitigation |
 |------|-------------|------------|
 | One active token per Application | New token request invalidates the previous immediately | `single_config_entry`, 1h refresh buffer |
-| Rate limit: 10 req/min | Maximum 10 requests per minute per account | Poll interval set to 300s (5 min) |
+| Rate limit: 10 req/min | Maximum 10 requests per minute per account | Poll interval set to 300s (5 min); client-side `COMMAND_MIN_INTERVAL` guard |
 | EU endpoint only | Only `openapi-eu.solaxcloud.com` tested | May need region configuration in Phase 2 |
 | Counter reset on device replacement | `TOTAL_INCREASING` will flag anomaly | Switch to `TOTAL` + `last_reset` on replacement |
 | HA offline >30 days | Token expired — cannot be refreshed | `_ensure_token()` auto-fetches new token on next HA start |
-| `code=10402` self-healing | Token invalidated externally causes 10402; coordinator auto-recovers on next poll (ConfigEntry cleared, fresh token fetched) | None — fully automatic |
+| `code=10402` self-healing | Token invalidated externally; coordinator auto-recovers on next poll (ConfigEntry cleared, fresh token fetched) | None — fully automatic |
 | No update_listener | Registering would cause reload loop on token saves | Re-add in Issue #7 when options flow separates token saves from options updates |
-
-### Rate-Limit Detection
-
-Rate limits are detected via two mechanisms:
-1. **Numeric codes** — `10200` (observed) and `10406` (official docs)
-2. **String matching** — exception messages containing `"rate limit"`, `"maximum call threshold"`, `"suspend the request"` etc. catch undocumented variants
-
-The client-side guard (`COMMAND_MIN_INTERVAL = 6.0s`) prevents redundant command calls when the limit is already known to be exceeded.
 
 ### Diagnostics
 
@@ -412,5 +449,5 @@ The client-side guard (`COMMAND_MIN_INTERVAL = 6.0s`) prevents redundant command
 
 After sending an EVC command, the integration does NOT immediately refresh coordinator data.
 Calling `async_request_refresh()` directly after a command triggers a second API call within
-milliseconds of the first, which reliably hits the SolaxCloud rate limit (code 10200).
+milliseconds of the first, which can hit the SolaxCloud rate limit.
 State updates arrive on the next regular poll (every 300 seconds).
