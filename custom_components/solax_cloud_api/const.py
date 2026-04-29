@@ -116,7 +116,8 @@ EVC_WORK_MODE_TO_INT: dict[str, int] = {
     "Green": 3,
 }
 
-# Valid currentGear values per workMode (None = not applicable)
+# Valid values for the "current" field per workMode (None = not applicable)
+# NOTE: The API field name is "current" (not "currentGear") per Developer Portal docs.
 EVC_CURRENT_GEAR_OPTIONS: dict[str, list[int] | None] = {
     "Stop":  None,
     "Fast":  None,
@@ -124,7 +125,7 @@ EVC_CURRENT_GEAR_OPTIONS: dict[str, list[int] | None] = {
     "Green": [3, 6],
 }
 
-# Default currentGear when switching into a mode that requires it
+# Default "current" value when switching into a mode that requires it
 EVC_DEFAULT_CURRENT_GEAR: dict[str, int] = {
     "ECO":   16,
     "Green": 6,
