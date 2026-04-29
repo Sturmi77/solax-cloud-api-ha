@@ -13,7 +13,8 @@ Key design decisions:
 - No update_listener registered — add_update_listener() fires on ANY async_update_entry()
   call, including the coordinator's internal token saves. A listener that reloads the
   integration would cause a reload loop on every token persistence.
-- API rate-limit codes 10200 (observed) and 10406 (official) both handled explicitly.
+- code=10200 ("Operation abnormality") is now handled separately — logs real `message` field for diagnosis.
+  code=10406 is the only true rate-limit code per official docs.
   Commands raise HomeAssistantError; data polls raise UpdateFailed. See const.py.
 - Client-side command guard: COMMAND_MIN_INTERVAL enforced before each API command call.
 
@@ -64,15 +65,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _is_rate_limited_response(resp: dict) -> bool:
-    """Return True when Solax response indicates API throttling/rate limit.
+    """Return True ONLY when Solax response indicates API throttling (code=10406).
 
-    Checks both numeric codes (10200, 10406) and exception message strings,
-    as Solax sometimes returns rate-limit errors with undocumented codes.
+    NOTE: code=10200 ("Operation abnormality") is NOT treated as rate limit here.
+    It is a generic error — the real cause is in the `message` field and must be
+    logged separately. Only code=10406 ("API call rate limit reached") is a true
+    rate limit per Solax Developer Portal Appendix 1.
     """
     if not isinstance(resp, dict):
         return False
     code = resp.get("code")
-    if code in (API_RATE_LIMIT_CODE, API_RATE_LIMIT_CODE_OFFICIAL):
+    if code == API_RATE_LIMIT_CODE_OFFICIAL:  # 10406 = true rate limit
         return True
     # String-based fallback for undocumented rate-limit responses
     exception_msg = str(resp.get("exception", "")).lower()
@@ -295,6 +298,20 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 },
             )
             raise UpdateFailed("SolaxCloud: Token expired — will fetch fresh token on next update")
+        if code == API_RATE_LIMIT_CODE:
+            # code=10200 in data poll: log the real message for diagnosis
+            actual_msg = data.get("message", "<no message>")
+            exception_detail = data.get("exception", "<no exception>")
+            _LOGGER.error(
+                "SolaxCloud: Data poll abnormality (code=10200) — "
+                "message='%s' exception='%s' full_response=%s",
+                actual_msg,
+                exception_detail,
+                data,
+            )
+            raise UpdateFailed(
+                f"SolaxCloud: Data poll error (code=10200) — {actual_msg}"
+            )
         if _is_rate_limited_response(data):
             exception_msg = data.get("exception", "")
             _LOGGER.warning(
@@ -423,6 +440,23 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                     continue
                 raise HomeAssistantError(
                     f"SolaxCloud: Rate limit exceeded after {_max_retries} attempts — please try again in a minute"
+                )
+            if code == API_RATE_LIMIT_CODE:
+                # code=10200 = "Operation abnormality" — NOT a rate limit per API docs.
+                # Log the actual `message` field so we can diagnose the real cause.
+                # Possible causes: wrong EVC state, missing parameter, OCPP mode active,
+                # invalid payload, device offline, or unsupported operation.
+                actual_msg = data.get("message", "<no message>")
+                exception_detail = data.get("exception", "<no exception>")
+                _LOGGER.error(
+                    "SolaxCloud: EVC command abnormality (code=10200) — "
+                    "message='%s' exception='%s' full_response=%s",
+                    actual_msg,
+                    exception_detail,
+                    data,
+                )
+                raise HomeAssistantError(
+                    f"SolaxCloud: EVC command error — {actual_msg} (code=10200)"
                 )
             if code != API_SUCCESS_CODE:
                 msg = data.get("message", "unknown error")
