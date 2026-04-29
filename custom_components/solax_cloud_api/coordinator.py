@@ -23,6 +23,7 @@ See ARCHITECTURE.md §6 and SECURITY.md §2 for details.
 from __future__ import annotations
 
 import logging
+import asyncio
 import time
 from copy import deepcopy
 from datetime import timedelta
@@ -355,67 +356,84 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             lambda _now: setattr(self, "update_interval", timedelta(seconds=DEFAULT_SCAN_INTERVAL)),
         )
 
-        await self._ensure_token()
+        # Retry loop — if the API returns rate-limit (code=10200/10406), wait and retry
+        # automatically instead of surfacing an error to the user.
+        # Max 3 attempts: initial + 2 retries with exponential backoff (15s, 30s).
+        _max_retries = 3
+        _retry_delay = 15  # seconds — first retry after 15s, second after 30s
+        _attempt = 0
 
-        headers = {
-            "Authorization": f"bearer {self._token}",
-            "Content-Type": "application/json",
-        }
+        while True:
+            await self._ensure_token()
 
-        _LOGGER.debug("SolaxCloud: sending EVC command to %s — %s", url, payload)
+            headers = {
+                "Authorization": f"bearer {self._token}",
+                "Content-Type": "application/json",
+            }
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    if resp.status == 401:
-                        self._token = None
-                        self._token_expires = 0.0
-                        raise HomeAssistantError(
-                            "SolaxCloud: Command rejected — token invalidated"
-                        )
-                    resp.raise_for_status()
-                    data = await resp.json()
-        except aiohttp.ClientError as err:
-            raise HomeAssistantError(
-                f"SolaxCloud: Command failed (network): {err}"
-            ) from err
+            _LOGGER.debug("SolaxCloud: sending EVC command to %s — %s (attempt %d)", url, payload, _attempt + 1)
 
-        code = data.get("code")
-        if code == API_TOKEN_EXPIRED_CODE:
-            _LOGGER.warning(
-                "SolaxCloud: Token expired/invalid (code=10402) — clearing token and ConfigEntry, command not sent"
-            )
-            self._token = None
-            self._token_expires = 0.0
-            self.hass.config_entries.async_update_entry(
-                self._entry,
-                data={
-                    **self._entry.data,
-                    CONF_ACCESS_TOKEN: None,
-                    CONF_TOKEN_EXPIRES: 0.0,
-                },
-            )
-            raise HomeAssistantError(
-                "SolaxCloud: Token expired — please retry the command in a few seconds"
-            )
-        if _is_rate_limited_response(data):
-            exception_msg = data.get("exception", "")
-            msg = "Rate limit exceeded (max 10 commands/min) — please wait before retrying"
-            _LOGGER.warning(
-                "SolaxCloud: %s (code=%s, exception=%s)",
-                msg,
-                code,
-                exception_msg or "n/a",
-            )
-            raise HomeAssistantError(f"SolaxCloud: {msg}")
-        if code != API_SUCCESS_CODE:
-            msg = data.get("message", "unknown error")
-            _LOGGER.error(
-                "SolaxCloud: EVC command error — %s (code=%s)", msg, code
-            )
-            raise HomeAssistantError(
-                f"SolaxCloud command failed: {msg} (code={code})"
-            )
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=payload, headers=headers) as resp:
+                        if resp.status == 401:
+                            self._token = None
+                            self._token_expires = 0.0
+                            raise HomeAssistantError(
+                                "SolaxCloud: Command rejected — token invalidated"
+                            )
+                        resp.raise_for_status()
+                        data = await resp.json()
+            except aiohttp.ClientError as err:
+                raise HomeAssistantError(
+                    f"SolaxCloud: Command failed (network): {err}"
+                ) from err
+
+            code = data.get("code")
+            if code == API_TOKEN_EXPIRED_CODE:
+                _LOGGER.warning(
+                    "SolaxCloud: Token expired/invalid (code=10402) — clearing token and ConfigEntry, command not sent"
+                )
+                self._token = None
+                self._token_expires = 0.0
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    data={
+                        **self._entry.data,
+                        CONF_ACCESS_TOKEN: None,
+                        CONF_TOKEN_EXPIRES: 0.0,
+                    },
+                )
+                raise HomeAssistantError(
+                    "SolaxCloud: Token expired — please retry the command in a few seconds"
+                )
+            if _is_rate_limited_response(data):
+                exception_msg = data.get("exception", "")
+                if _attempt < _max_retries - 1:
+                    _LOGGER.warning(
+                        "SolaxCloud: Rate limit hit (code=%s, attempt=%d/%d) — retrying in %ds",
+                        code,
+                        _attempt + 1,
+                        _max_retries,
+                        _retry_delay,
+                    )
+                    await asyncio.sleep(_retry_delay)
+                    _attempt += 1
+                    _retry_delay = min(_retry_delay * 2, 60)
+                    continue
+                raise HomeAssistantError(
+                    f"SolaxCloud: Rate limit exceeded after {_max_retries} attempts — please try again in a minute"
+                )
+            if code != API_SUCCESS_CODE:
+                msg = data.get("message", "unknown error")
+                _LOGGER.error(
+                    "SolaxCloud: EVC command error — %s (code=%s)", msg, code
+                )
+                raise HomeAssistantError(
+                    f"SolaxCloud command failed: {msg} (code={code})"
+                )
+            # Success — break out of retry loop
+            break
 
         request_id = data.get("requestId")
         _LOGGER.debug(
