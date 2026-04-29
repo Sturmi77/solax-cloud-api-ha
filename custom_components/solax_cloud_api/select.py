@@ -112,7 +112,7 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Send work mode command to SolaxCloud API.
 
-        For ECO and Green modes, sends the default currentGear automatically.
+        For ECO and Green modes, sends the default "current" value automatically.
         The user can fine-tune the current afterwards using the number entity.
         """
         work_mode_int = EVC_WORK_MODE_TO_INT.get(option)
@@ -125,16 +125,17 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
             "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
-        # ECO and Green require a currentGear — send the default
+        # ECO and Green require a "current" field — send the default
+        # NOTE: API field is "current" (not "currentGear") per Developer Portal docs
         default_gear = EVC_DEFAULT_CURRENT_GEAR.get(option)
         if default_gear is not None:
-            payload["currentGear"] = default_gear
+            payload["current"] = default_gear
 
         _LOGGER.info(
             "SolaxCloud: Setting EVC work mode → %s (workMode=%s%s)",
             option,
             work_mode_int,
-            f", currentGear={default_gear}" if default_gear else "",
+            f", current={default_gear}" if default_gear else "",
         )
 
         await self.coordinator.async_send_evc_command(
