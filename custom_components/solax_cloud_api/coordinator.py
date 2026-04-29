@@ -232,6 +232,19 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         Raises UpdateFailed on any error so HA marks the integration unavailable
         and retries on the next interval.
         """
+        # Skip poll if a command was sent very recently — avoids hitting the API
+        # rate limit by polling immediately after a command in the same burst window.
+        elapsed_since_command = time.monotonic() - self._last_command_time
+        if elapsed_since_command < COMMAND_MIN_INTERVAL:
+            _LOGGER.debug(
+                "SolaxCloud: Skipping data poll — command sent %.1fs ago (guard: %.0fs)",
+                elapsed_since_command,
+                COMMAND_MIN_INTERVAL,
+            )
+            if self.data is not None:
+                return self.data
+            raise UpdateFailed("SolaxCloud: Poll skipped — command cooldown active")
+
         await self._ensure_token()
 
         evc_sn = self._entry.data.get(CONF_EVC_SN)
@@ -330,6 +343,17 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 f"SolaxCloud: Rate limit — please wait {COMMAND_MIN_INTERVAL - elapsed:.0f}s before sending another command"
             )
         self._last_command_time = now
+
+        # Postpone the next scheduled data poll so it does not collide with this
+        # command in the same API burst window. Reschedule the coordinator update
+        # interval temporarily to push the poll back by COMMAND_MIN_INTERVAL seconds.
+        self.update_interval = timedelta(
+            seconds=DEFAULT_SCAN_INTERVAL + COMMAND_MIN_INTERVAL
+        )
+        self.hass.async_call_later(
+            COMMAND_MIN_INTERVAL,
+            lambda _now: setattr(self, "update_interval", timedelta(seconds=DEFAULT_SCAN_INTERVAL)),
+        )
 
         await self._ensure_token()
 
