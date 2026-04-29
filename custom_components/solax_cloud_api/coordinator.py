@@ -112,6 +112,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._token: str | None = None
         self._token_expires: float = 0.0
         self._last_command_time: float = 0.0
+        self._postpone_poll_until: float = 0.0   # skip polls until this monotonic timestamp
         # Raw (unfiltered) API response — stored for diagnostics export
         self.raw_api_response: dict | None = None
 
@@ -238,12 +239,11 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         """
         # Skip poll if a command was sent very recently — avoids hitting the API
         # rate limit by polling immediately after a command in the same burst window.
-        elapsed_since_command = time.monotonic() - self._last_command_time
-        if elapsed_since_command < COMMAND_MIN_INTERVAL:
+        if time.monotonic() < self._postpone_poll_until:
+            remaining = self._postpone_poll_until - time.monotonic()
             _LOGGER.debug(
-                "SolaxCloud: Skipping data poll — command sent %.1fs ago (guard: %.0fs)",
-                elapsed_since_command,
-                COMMAND_MIN_INTERVAL,
+                "SolaxCloud: Skipping data poll — command cooldown, %.1fs remaining",
+                remaining,
             )
             if self.data is not None:
                 return self.data
@@ -363,15 +363,9 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._last_command_time = now
 
         # Postpone the next scheduled data poll so it does not collide with this
-        # command in the same API burst window. Reschedule the coordinator update
-        # interval temporarily to push the poll back by COMMAND_MIN_INTERVAL seconds.
-        self.update_interval = timedelta(
-            seconds=DEFAULT_SCAN_INTERVAL + COMMAND_MIN_INTERVAL
-        )
-        self.hass.async_call_later(
-            COMMAND_MIN_INTERVAL,
-            lambda _now: setattr(self, "update_interval", timedelta(seconds=DEFAULT_SCAN_INTERVAL)),
-        )
+        # command in the same API burst window. Set a timestamp that
+        # _async_update_data checks before fetching.
+        self._postpone_poll_until = time.monotonic() + COMMAND_MIN_INTERVAL
 
         # Retry loop — if the API returns rate-limit (code=10200/10406), wait and retry
         # automatically instead of surfacing an error to the user.
@@ -478,12 +472,10 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
 
         # Schedule delivery confirmation poll — non-blocking
         if request_id:
-            self.hass.async_call_later(
-                COMMAND_POLL_DELAY,
-                lambda _now: self.hass.async_create_task(
-                    self.async_poll_command_result(request_id)
-                ),
-            )
+            async def _schedule_poll() -> None:
+                await asyncio.sleep(COMMAND_POLL_DELAY)
+                await self.async_poll_command_result(request_id)
+            self.hass.async_create_task(_schedule_poll())
 
         return data
 
