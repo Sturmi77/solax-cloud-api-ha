@@ -50,17 +50,17 @@ EVC_WORKING_MODE_MAP = {
 # Auth endpoint uses code=0 for success; all other endpoints use code=10000
 API_SUCCESS_CODE = 10000          # data / control / poll endpoints — "Operation successful"
 API_AUTH_SUCCESS_CODE = 0         # auth endpoint only
-API_RATE_LIMIT_CODE = 10200       # "Operation abnormality" — observed as rate limit in live testing
-                                  # NOTE: Official docs list 10406 as the rate limit code.
-                                  # In practice, 10200 is what the API returns when rate-limited.
-API_RATE_LIMIT_CODE_OFFICIAL = 10406  # "API call rate limit reached" — official docs code
+API_RATE_LIMIT_CODE = 10200       # "Operation abnormality, see message field" — generic error.
+                                  # NOT a rate limit! Logged verbatim in coordinator to reveal real cause.
+                                  # Previous hypothesis (observed as rate-limit) was WRONG.
+API_RATE_LIMIT_CODE_OFFICIAL = 10406  # "API call rate limit reached" — ONLY true rate-limit code per docs
 API_TOKEN_EXPIRED_CODE = 10402    # "Request access_token authentication failed" — token invalidated externally
 
 # Full error code reference (Developer Portal Appendix 1):
 # 10000  Operation successful
 # 10001  Operation failed
 # 11500  System busy, please try again later
-# 10200  Operation abnormality (see message for details)  ← observed as rate limit in live testing
+# 10200  Operation abnormality (see message for details)  ← generic error, NOT rate limit! Log message field.
 # 10400  Request not authenticated
 # 10401  Username or password incorrect
 # 10402  Request access_token authentication failed       ← token invalidated externally
