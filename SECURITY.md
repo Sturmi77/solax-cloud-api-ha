@@ -1,6 +1,6 @@
 # Security Analysis — SolaxCloud API Integration
 
-This document provides a critical analysis of credential storage, token management, and hardening recommendations for the `solax_cloud_api` Home Assistant integration.
+This document provides a critical analysis of credential storage, token management, and hardening recommendations for the `solax_cloud_evc` Home Assistant integration.
 
 ---
 

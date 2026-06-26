@@ -2,44 +2,49 @@
 
 Entities:
   1. EvcWorkModeSelect    — Stop / Fast / ECO / Green
-     API: POST /openapi/v2/device/evc/setWorkMode
-     Payload: {"sn": "<evc_sn>", "workMode": <int>}
+     API: POST /openapi/v2/device/evc_control/set_evc_work_mode
 
-  2. EvcMaxCurrentSelect  — 6A … 32A (Fast mode charging current)
-     API: POST /openapi/v2/device/evc/setMaxCurrent
-     Payload: {"sn": "<evc_sn>", "maxCurrent": <int>}
+  2. EvcStartModeSelect   — Plug & Charge / Swipe Card / APP
+     API: POST /openapi/v2/device/evc_control/set_evc_start_mode
 
-See ARCHITECTURE.md §6 for optimistic vs. coordinator-refresh strategy.
+  3. EvcChargeSceneSelect — Home / OCPP / Standard
+     API: POST /openapi/v2/device/evc_control/set_charge_scene
+
+All entities reuse coordinator.async_send_evc_command() for token management.
+See ARCHITECTURE.md §8 for design rationale.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
-
-import aiohttp
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_ACCESS_TOKEN,
+    BUSINESS_TYPE_RESIDENTIAL,
     CONF_EVC_SN,
-    CONTROL_URL_MAX_CURRENT,
-    CONTROL_URL_WORK_MODE,
-    DATA_EVC_MAX_CURRENT,
-    DATA_EVC_WORK_MODE,
     DOMAIN,
-    EVC_WORK_MODE_LABEL_TO_INT,
-    EVC_WORK_MODE_LABELS,
-    build_device_info,
+    EVC_CHARGE_SCENE_TO_INT,
+    EVC_CONTROL_SCENE_URL,
+    EVC_CONTROL_START_MODE_URL,
+    EVC_CONTROL_WORK_MODE_URL,
+    EVC_DEFAULT_CURRENT_GEAR,
+    EVC_START_MODE_TO_INT,
+    EVC_WORK_MODE_TO_INT,
+    EVC_WORKING_MODE_MAP,
+    _evc_device_info,
 )
-from .coordinator import SolaxCloudApiCoordinator
+from .coordinator import SolaxCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+# Limit concurrent update calls to 1 — appropriate for cloud API to avoid rate limiting
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -47,136 +52,220 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up EVC select entities."""
-    coordinator: SolaxCloudApiCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            EvcWorkModeSelect(coordinator, entry),
-            EvcMaxCurrentSelect(coordinator, entry),
-        ]
-    )
+    """Set up SolaxCloud select entities from config entry."""
+    coordinator: SolaxCoordinator = hass.data[DOMAIN][entry.entry_id]
+    evc_sn = entry.data.get(CONF_EVC_SN, "unknown")
+
+    async_add_entities([
+        EvcWorkModeSelect(coordinator, entry, evc_sn),
+        EvcStartModeSelect(coordinator, entry, evc_sn),
+        EvcChargeSceneSelect(coordinator, entry, evc_sn),
+    ])
 
 
-# ── Base helper — shared POST logic ─────────────────────────────────────────
+class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
+    """Select entity to control the EV Charger work mode.
 
-
-class _EvcSelectBase(CoordinatorEntity[SolaxCloudApiCoordinator], SelectEntity):
-    """Base class with shared POST-to-API logic."""
+    Current state is read from coordinator data (deviceWorkingMode field).
+    Writing sends a command to the SolaxCloud API; state updates arrive
+    on the next regular poll cycle.
+    """
 
     _attr_has_entity_name = True
+    _attr_name = "EVC Work Mode"
+    _attr_icon = "mdi:ev-station"
+    _attr_options = list(EVC_WORK_MODE_TO_INT.keys())
 
     def __init__(
         self,
-        coordinator: SolaxCloudApiCoordinator,
+        coordinator: SolaxCoordinator,
         entry: ConfigEntry,
+        evc_sn: str,
     ) -> None:
         super().__init__(coordinator)
-        self._entry = entry
-        self._attr_device_info = build_device_info(entry.data[CONF_EVC_SN])
+        self._evc_sn = evc_sn
+        self._attr_unique_id = f"{entry.entry_id}_evc_work_mode_select"
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
+        self._attr_current_option: str | None = None  # optimistic: set locally after command
 
-    async def _post_command(
-        self,
-        url: str,
-        payload: dict[str, Any],
-    ) -> bool:
-        """POST a control command to the EVC API.
+    @property
+    def current_option(self) -> str | None:
+        """Return current work mode.
 
-        Returns True on success, False on API or network error.
-        Token is always read from the entry at call time to handle token refresh.
+        Returns the optimistic (locally cached) value immediately after a command,
+        falling back to the coordinator data on the next poll.
         """
-        headers = {
-            "Authorization": f"Bearer {self._entry.data[CONF_ACCESS_TOKEN]}",
-            "Content-Type": "application/json",
+        if self._attr_current_option is not None:
+            return self._attr_current_option
+        if self.coordinator.data is None:
+            return None
+        raw = self.coordinator.data.get("deviceWorkingMode")
+        if raw is None:
+            return None
+        return EVC_WORKING_MODE_MAP.get(raw)
+
+    @property
+    def available(self) -> bool:
+        """Unavailable when coordinator has no data."""
+        return self.coordinator.last_update_success and self.coordinator.data is not None
+
+    async def async_select_option(self, option: str) -> None:
+        """Send work mode command to SolaxCloud API.
+
+        For ECO and Green modes, sends the default "current" value automatically.
+        The user can fine-tune the current afterwards using the number entity.
+        """
+        work_mode_int = EVC_WORK_MODE_TO_INT.get(option)
+        if work_mode_int is None:
+            raise HomeAssistantError(f"Unknown work mode: {option}")
+
+        payload: dict = {
+            "snList": [self._evc_sn],
+            "workMode": work_mode_int,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    resp.raise_for_status()
-                    result = await resp.json()
-                    api_code = result.get("code")
-                    if api_code != 10000:  # noqa: PLR2004
-                        _LOGGER.warning(
-                            "EVC control command failed: code=%s msg=%s",
-                            api_code,
-                            result.get("message"),
-                        )
-                        return False
-        except aiohttp.ClientError as err:
-            _LOGGER.error("EVC control command network error: %s", err)
-            return False
-        return True
+
+        # ECO and Green require a "current" field — send the default
+        # NOTE: API field is "current" (not "currentGear") per Developer Portal docs
+        default_gear = EVC_DEFAULT_CURRENT_GEAR.get(option)
+        if default_gear is not None:
+            payload["current"] = default_gear
+
+        _LOGGER.info(
+            "SolaxCloud: Setting EVC work mode → %s (workMode=%s%s)",
+            option,
+            work_mode_int,
+            f", current={default_gear}" if default_gear else "",
+        )
+
+        await self.coordinator.async_send_evc_command(
+            EVC_CONTROL_WORK_MODE_URL, payload
+        )
+
+        # Optimistic update — show new state immediately without waiting for next poll
+        self._attr_current_option = option
+        self.async_write_ha_state()
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on coordinator update so real API value takes over."""
+        self._attr_current_option = None
+        super()._handle_coordinator_update()
 
 
-# ── Work mode select ——————————————————————————————————————————
+class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
+    """Select entity to control the EV Charger start mode.
 
+    Determines how a charging session is initiated:
+      Plug & Charge — session starts automatically on plug-in
+      Swipe Card    — RFID card required before charging starts
+      APP           — session must be started via the SolaxCloud APP
 
-class EvcWorkModeSelect(_EvcSelectBase):
-    """Select entity for EVC work mode: Stop / Fast / ECO / Green."""
+    NOTE: The realtime_data API does not return the current startMode value,
+    so current_option always returns None (unknown). The entity is still fully
+    writable — HA will show the last user-selected option via _attr_current_option
+    after a successful command.
+    """
 
-    _attr_translation_key = "evc_work_mode"
-    _attr_options = list(EVC_WORK_MODE_LABELS.values())  # ["Stop", "Fast", "ECO", "Green"]
+    _attr_has_entity_name = True
+    _attr_name = "EVC Start Mode"
+    _attr_icon = "mdi:key-wireless"
+    _attr_options = list(EVC_START_MODE_TO_INT.keys())
 
     def __init__(
         self,
-        coordinator: SolaxCloudApiCoordinator,
+        coordinator: SolaxCoordinator,
         entry: ConfigEntry,
+        evc_sn: str,
     ) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.data[CONF_EVC_SN]}_work_mode"
+        super().__init__(coordinator)
+        self._evc_sn = evc_sn
+        self._attr_unique_id = f"{entry.entry_id}_evc_start_mode_select"
+        self._attr_current_option = None   # API does not report current value
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
 
     @property
-    def current_option(self) -> str | None:
-        """Return current work mode label."""
-        if self.coordinator.data is None:
-            return None
-        raw = self.coordinator.data.get(DATA_EVC_WORK_MODE)
-        return EVC_WORK_MODE_LABELS.get(raw) if raw is not None else None
+    def available(self) -> bool:
+        """Return True if EVC is online and coordinator data is present."""
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def async_select_option(self, option: str) -> None:
-        """Send work mode command to EVC."""
-        mode_int = EVC_WORK_MODE_LABEL_TO_INT.get(option)
+        """Send start mode command to SolaxCloud API."""
+        mode_int = EVC_START_MODE_TO_INT.get(option)
         if mode_int is None:
-            _LOGGER.error("Unknown work mode option: %s", option)
-            return
+            raise HomeAssistantError(f"Unknown start mode: {option}")
 
         payload = {
-            "sn": self._entry.data[CONF_EVC_SN],
-            "workMode": mode_int,
+            "snList": [self._evc_sn],
+            "startMode": mode_int,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
-        if await self._post_command(CONTROL_URL_WORK_MODE, payload):
-            await self.coordinator.async_request_refresh()
+
+        _LOGGER.info(
+            "SolaxCloud: Setting EVC start mode → %s (startMode=%s)", option, mode_int
+        )
+
+        await self.coordinator.async_send_evc_command(
+            EVC_CONTROL_START_MODE_URL, payload
+        )
+
+        # Persist selection locally — API does not report it back in realtime_data
+        self._attr_current_option = option
+        self.async_write_ha_state()
 
 
-# ── Max current select —————————————————————————————————————————
+class EvcChargeSceneSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
+    """Select entity to control the EV Charger charge scene.
 
+    Determines the charging scenario:
+      Home     — residential charging (standard mode)
+      OCPP     — connect to an OCPP backend (requires URL + ChargerId — future option)
+      Standard — standard / solar mode
 
-class EvcMaxCurrentSelect(_EvcSelectBase):
-    """Select entity for EVC max charging current: 6A … 32A (Fast mode)."""
+    NOTE: OCPP requires ocppUrl + ocppChargerId. Selecting OCPP here switches the
+    scene but does not configure OCPP parameters (deferred to Issue #9 options flow).
+    The realtime_data API does not return the current chargerScene value.
+    """
 
-    _attr_translation_key = "evc_max_current"
-    _attr_options = [str(a) for a in range(6, 33)]  # "6" .. "32"
+    _attr_has_entity_name = True
+    _attr_name = "EVC Charge Scene"
+    _attr_icon = "mdi:home-lightning-bolt"
+    _attr_options = list(EVC_CHARGE_SCENE_TO_INT.keys())
 
     def __init__(
         self,
-        coordinator: SolaxCloudApiCoordinator,
+        coordinator: SolaxCoordinator,
         entry: ConfigEntry,
+        evc_sn: str,
     ) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.data[CONF_EVC_SN]}_max_current"
+        super().__init__(coordinator)
+        self._evc_sn = evc_sn
+        self._attr_unique_id = f"{entry.entry_id}_evc_charge_scene_select"
+        self._attr_current_option = None   # API does not report current value
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
 
     @property
-    def current_option(self) -> str | None:
-        """Return current max current as string label."""
-        if self.coordinator.data is None:
-            return None
-        raw = self.coordinator.data.get(DATA_EVC_MAX_CURRENT)
-        return str(raw) if raw is not None else None
+    def available(self) -> bool:
+        """Return True if EVC is online and coordinator data is present."""
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     async def async_select_option(self, option: str) -> None:
-        """Send max current command to EVC."""
-        payload = {
-            "sn": self._entry.data[CONF_EVC_SN],
-            "maxCurrent": int(option),
+        """Send charge scene command to SolaxCloud API."""
+        scene_int = EVC_CHARGE_SCENE_TO_INT.get(option)
+        if scene_int is None:
+            raise HomeAssistantError(f"Unknown charge scene: {option}")
+
+        payload: dict = {
+            "snList": [self._evc_sn],
+            "chargerScene": scene_int,
+            "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
-        if await self._post_command(CONTROL_URL_MAX_CURRENT, payload):
-            await self.coordinator.async_request_refresh()
+
+        _LOGGER.info(
+            "SolaxCloud: Setting EVC charge scene → %s (chargerScene=%s)", option, scene_int
+        )
+
+        await self.coordinator.async_send_evc_command(EVC_CONTROL_SCENE_URL, payload)
+
+        # Persist selection locally — API does not report it back in realtime_data
+        self._attr_current_option = option
+        self.async_write_ha_state()

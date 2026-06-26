@@ -64,7 +64,7 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 
 ### Manual
 
-1. Copy `custom_components/solax_cloud_api/` to your HA `config/custom_components/` directory
+1. Copy `custom_components/solax_cloud_evc/` to your HA `config/custom_components/` directory
 2. Restart Home Assistant
 
 ### Supported Languages

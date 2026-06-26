@@ -4,6 +4,13 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-26
+
+### Changed
+- **BREAKING — HA domain renamed `solax_cloud_api` → `solax_cloud_evc`** to resolve HACS catalog conflict with the existing `solax_cloud_api` integration (HACS PR #7282 review feedback). Users upgrading from v1.0.x must remove and re-add the integration via Settings → Devices & Services. The new domain better reflects the integration's scope (EV Charger).
+- HACS / manifest display name changed from `SolaxCloud API` to `SolaxCloud EV Charger`
+- `custom_components/solax_cloud_api/` folder renamed to `custom_components/solax_cloud_evc/`
+
 ### Fixed
 - **EVC command payload field name** — renamed `currentGear` → `current` in `set_evc_work_mode` payload to match Solax Developer Portal API docs. Wrong field name caused `code=10200` ("Operation abnormality") on all ECO and Green mode changes
 - **`code=10200` misidentified as rate limit** — `_is_rate_limited_response()` no longer treats `10200` as a rate limit. Per Solax Appendix 1, `10200` means "Operation abnormality — see message field"; `10406` is the only true rate-limit code. Real `message` content is now logged verbatim so root causes are visible in HA logs

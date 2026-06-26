@@ -10,68 +10,135 @@ DATA_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/realtime_data"
 # TODO Issue #5: DEVICE_LIST_URL will be used for inverter/battery device discovery
 
 # Token management
-TOKEN_EXPIRY_MARGIN_SECONDS = 60  # Refresh token this many seconds before expiry
+TOKEN_REFRESH_BUFFER = 3600  # seconds before expiry to trigger refresh (1 hour)
+DEFAULT_TOKEN_LIFETIME = 2591999  # ~30 days in seconds
 
-# Device types
-DEVICE_TYPE_EVC = 4  # EV Charger
+# Polling
+DEFAULT_SCAN_INTERVAL = 300  # 5 minutes (API rate limit: 10 req/min)
 
-# Config entry keys
+# ConfigEntry keys
 CONF_CLIENT_ID = "client_id"
 CONF_CLIENT_SECRET = "client_secret"
+CONF_ACCESS_TOKEN = "access_token"
+CONF_TOKEN_EXPIRES = "token_expires"
 CONF_EVC_SN = "evc_sn"
 
-# Data keys returned by realtime_data API for EVC (deviceType=4)
-# Phase 1: EV Charger sensors
-DATA_EVC_STATUS = "evcStatus"                          # int: 0=idle,1=charging,2=fault
-DATA_EVC_CHARGING_POWER = "evcChargingPower"           # float: W
-DATA_EVC_CHARGED_ENERGY = "evcChargedEnergy"           # float: kWh (session)
-DATA_EVC_TOTAL_CHARGED_ENERGY = "evcTotalChargedEnergy" # float: kWh (lifetime)
-DATA_EVC_WORK_MODE = "evcWorkMode"                     # int: 0=stop,1=fast,2=eco,3=green
-DATA_EVC_ECO_MIN_CURRENT = "evcEcoMinCurrent"          # int: A (ECO mode min)
-DATA_EVC_ECO_MAX_CURRENT = "evcEcoMaxCurrent"          # int: A (ECO mode max)
-DATA_EVC_GREEN_MIN_CURRENT = "evcGreenMinCurrent"      # int: A (Green mode min)
-DATA_EVC_GREEN_MAX_CURRENT = "evcGreenMaxCurrent"      # int: A (Green mode max)
-DATA_EVC_MAX_CURRENT = "evcMaxCurrent"                 # int: A (Fast mode / device limit)
+# Device types
+DEVICE_TYPE_INVERTER = 1
+DEVICE_TYPE_BATTERY = 2
+DEVICE_TYPE_EVC = 4
 
-# EVC work mode mapping
-EVC_WORK_MODE_STOP = 0
-EVC_WORK_MODE_FAST = 1
-EVC_WORK_MODE_ECO = 2
-EVC_WORK_MODE_GREEN = 3
-
-EVC_WORK_MODE_LABELS: dict[int, str] = {
-    EVC_WORK_MODE_STOP: "Stop",
-    EVC_WORK_MODE_FAST: "Fast",
-    EVC_WORK_MODE_ECO: "ECO",
-    EVC_WORK_MODE_GREEN: "Green",
+# EVC deviceStatus mapping (from X3-EVC User Manual + Developer API docs)
+EVC_STATUS_MAP = {
+    0: "Waiting",      # Idle — no EV connected or ready
+    1: "Charging",     # EV actively charging
+    2: "Complete",     # Charging finished (EV full or target reached)
+    3: "Fault",        # Error state — fault light on
+    4: "Unavailable",  # Remote updating / not available
+    5: "Stop",         # EV connected but not charging (manually stopped)
 }
 
-EVC_WORK_MODE_LABEL_TO_INT: dict[str, int] = {
-    v: k for k, v in EVC_WORK_MODE_LABELS.items()
+# EVC deviceWorkingMode mapping (charging mode)
+EVC_WORKING_MODE_MAP = {
+    0: "Stop",
+    1: "Fast",
+    2: "ECO",
+    3: "Green",
 }
 
-# EVC status mapping
-EVC_STATUS_LABELS: dict[int, str] = {
-    0: "Idle",
-    1: "Charging",
-    2: "Fault",
+# API response codes — official meanings from Developer Portal Appendix 1
+# Auth endpoint uses code=0 for success; all other endpoints use code=10000
+API_SUCCESS_CODE = 10000          # data / control / poll endpoints — "Operation successful"
+API_AUTH_SUCCESS_CODE = 0         # auth endpoint only
+API_RATE_LIMIT_CODE = 10200       # "Operation abnormality, see message field" — generic error.
+                                  # NOT a rate limit! Logged verbatim in coordinator to reveal real cause.
+                                  # Previous hypothesis (observed as rate-limit) was WRONG.
+API_RATE_LIMIT_CODE_OFFICIAL = 10406  # "API call rate limit reached" — ONLY true rate-limit code per docs
+API_TOKEN_EXPIRED_CODE = 10402    # "Request access_token authentication failed" — token invalidated externally
+
+# Full error code reference (Developer Portal Appendix 1):
+# 10000  Operation successful
+# 10001  Operation failed
+# 11500  System busy, please try again later
+# 10200  Operation abnormality (see message for details)  ← generic error, NOT rate limit! Log message field.
+# 10400  Request not authenticated
+# 10401  Username or password incorrect
+# 10402  Request access_token authentication failed       ← token invalidated externally
+# 10403  Interface has no access rights
+# 10404  Callback function not configured
+# 10405  API call quota exhausted
+# 10406  API call rate limit reached                      ← official rate limit code
+# 10500  User has no device data permission
+
+# Business types
+BUSINESS_TYPE_RESIDENTIAL = 1     # businessType=1 per Developer Portal — used for all EVC requests
+
+# Client-side command rate-limit guard
+COMMAND_MIN_INTERVAL = 6.0  # seconds — conservative guard for 10 commands/min API limit
+
+# Command result polling
+COMMAND_POLL_URL = "https://openapi-eu.solaxcloud.com/openapi/apiRequestLog/listByCondition"
+COMMAND_POLL_DELAY = 5            # seconds to wait before polling
+
+# Command delivery status codes (Appendix 8)
+COMMAND_STATUS_MAP: dict[int, str] = {
+    1: "Pending",
+    2: "Success",
+    3: "Delivered",
+    4: "Failed",
 }
 
-# API control endpoints
-CONTROL_URL_WORK_MODE = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc/setWorkMode"
-CONTROL_URL_ECO_CURRENT = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc/setEcoCurrentRange"
-CONTROL_URL_GREEN_CURRENT = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc/setGreenCurrentRange"
-CONTROL_URL_MAX_CURRENT = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc/setMaxCurrent"
+# EVC Control endpoints
+EVC_CONTROL_BASE_URL = "https://openapi-eu.solaxcloud.com/openapi/v2/device/evc_control"
+EVC_CONTROL_WORK_MODE_URL  = f"{EVC_CONTROL_BASE_URL}/set_evc_work_mode"
+EVC_CONTROL_START_MODE_URL = f"{EVC_CONTROL_BASE_URL}/set_evc_start_mode"
+EVC_CONTROL_SCENE_URL      = f"{EVC_CONTROL_BASE_URL}/set_charge_scene"
 
-# Developer portal URL (used in config flow description)
-DEVELOPER_PORTAL_URL = "https://www.solaxcloud.com/developer"
+# EVC Start Mode
+EVC_START_MODE_TO_INT: dict[str, int] = {
+    "Plug & Charge": 0,
+    "Swipe Card":    1,
+    "APP":           2,
+}
+
+# EVC Charge Scene
+EVC_CHARGE_SCENE_TO_INT: dict[str, int] = {
+    "Home":     0,
+    "OCPP":     1,
+    "Standard": 2,
+}
+
+# Work mode: int → API value (same as EVC_WORKING_MODE_MAP keys)
+EVC_WORK_MODE_TO_INT: dict[str, int] = {
+    "Stop": 0,
+    "Fast": 1,
+    "ECO": 2,
+    "Green": 3,
+}
+
+# Valid values for the "current" field per workMode (None = not applicable)
+# NOTE: The API field name is "current" (not "currentGear") per Developer Portal docs.
+EVC_CURRENT_GEAR_OPTIONS: dict[str, list[int] | None] = {
+    "Stop":  None,
+    "Fast":  None,
+    "ECO":   [6, 10, 16, 20, 25],
+    "Green": [3, 6],
+}
+
+# Default "current" value when switching into a mode that requires it
+EVC_DEFAULT_CURRENT_GEAR: dict[str, int] = {
+    "ECO":   16,
+    "Green": 6,
+}
 
 
-def build_device_info(evc_sn: str) -> DeviceInfo:
-    """Build a DeviceInfo object for the EV Charger."""
+def _evc_device_info(domain: str, evc_sn: str) -> DeviceInfo:
+    """Return shared DeviceInfo for the EVC entity."""
     return DeviceInfo(
-        identifiers={(DOMAIN, evc_sn)},
+        identifiers={(domain, evc_sn)},
         name="SolaxCloud EV Charger",
         manufacturer="Solax Power",
         model="X3-EVC-22K",
+        serial_number=evc_sn,
+        configuration_url="https://developer.solaxcloud.com",
     )

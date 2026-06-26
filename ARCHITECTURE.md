@@ -1,6 +1,6 @@
 # Architecture — SolaxCloud API Home Assistant Integration
 
-**Domain:** `solax_cloud_api`  
+**Domain:** `solax_cloud_evc`  
 **iot_class:** `cloud_polling`  
 **Target HA version:** 2024.1+
 
@@ -118,7 +118,7 @@ Authorization: bearer <access_token>
 ## 5. File Structure
 
 ```
-custom_components/solax_cloud_api/
+custom_components/solax_cloud_evc/
 ├── __init__.py              # async_setup_entry, async_unload_entry
 ├── manifest.json            # domain, version, requirements, single_config_entry
 ├── const.py                 # DOMAIN, endpoint URLs, deviceType map, scan interval
@@ -390,9 +390,9 @@ Token fetch fails with 401 / invalid credentials
 
 ```json
 {
-  "domain": "solax_cloud_api",
-  "name": "SolaxCloud API",
-  "version": "1.0.0",
+  "domain": "solax_cloud_evc",
+  "name": "SolaxCloud EV Charger",
+  "version": "1.1.0",
   "documentation": "https://github.com/Sturmi77/solax-cloud-api-ha",
   "issue_tracker": "https://github.com/Sturmi77/solax-cloud-api-ha/issues",
   "requirements": ["aiohttp>=3.8.0"],
@@ -416,7 +416,7 @@ The `coordinator.py` is designed to be device-agnostic. In Phase 2+, the coordin
 3. Register sensors under a shared HA Device per physical unit (inverter, battery, EVC)
 
 ```
-custom_components/solax_cloud_api/
+custom_components/solax_cloud_evc/
 └── devices/
     ├── evc.py        # deviceType=4 — Phase 1 (current)
     ├── inverter.py   # deviceType=1 — Phase 2
