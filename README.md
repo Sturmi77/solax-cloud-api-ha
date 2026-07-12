@@ -13,9 +13,9 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 
 | Device | Type ID | Status |
 |--------|---------|--------|
-| EV Charger (X3-EVC-22K) | `deviceType=4` | ✅ Phase 1 |
-| Inverter (X3) | `deviceType=1` | 🔜 Phase 2 |
-| Battery | `deviceType=2` | 🔜 Phase 3 |
+| EV Charger (X3-EVC-22K) | `deviceType=4` | Phase 1 (available) |
+| Inverter (X3) | `deviceType=1` | Phase 2 (planned) |
+| Battery | `deviceType=2` | Phase 3 (planned) |
 
 ---
 
@@ -34,13 +34,13 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 
 | Entity | Device Class | State Class | Unit | Energy Dashboard |
 |--------|-------------|-------------|------|-----------------|
-| EVC Charging Status | — | — | — | ❌ (text enum) |
-| EVC Charging Power | `power` | `measurement` | W | ✅ individual device |
-| EVC Total Charge Energy | `energy` | `total_increasing` | kWh | ✅ **primary** |
-| EVC Session Energy | `energy` | `total` | kWh | ❌ (resets per session) |
-| EVC Current L1 | `current` | `measurement` | A | ❌ |
-| EVC Current L2 | `current` | `measurement` | A | ❌ |
-| EVC Current L3 | `current` | `measurement` | A | ❌ |
+| EVC Charging Status | — | — | — | No (text enum) |
+| EVC Charging Power | `power` | `measurement` | W | Yes — individual device |
+| EVC Total Charge Energy | `energy` | `total_increasing` | kWh | Yes — **primary** |
+| EVC Session Energy | `energy` | `total` | kWh | No (resets per session) |
+| EVC Current L1 | `current` | `measurement` | A | No |
+| EVC Current L2 | `current` | `measurement` | A | No |
+| EVC Current L3 | `current` | `measurement` | A | No |
 
 ---
 
@@ -57,9 +57,9 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 
 ### Via HACS (recommended)
 
-1. Open HACS → Integrations → ⋮ → Custom repositories
+1. Open HACS → Integrations → menu (three dots) → Custom repositories
 2. Add `https://github.com/Sturmi77/solax-cloud-api-ha` as type **Integration**
-3. Install **SolaxCloud API**
+3. Install **SolaxCloud EV Charger**
 4. Restart Home Assistant
 
 ### Manual
@@ -76,7 +76,7 @@ The integration UI is available in **English** and **German**. Home Assistant au
 ## Configuration
 
 1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for **SolaxCloud API**
+2. Search for **SolaxCloud EV Charger**
 3. Enter your `client_id` and `client_secret` from the Developer Portal
 4. Enter your **EV Charger Serial Number** (`deviceSn`) — found in the Developer Portal under **Device → Device List**
 5. The integration validates your credentials, sets up all sensor and control entities, and appears under your devices
@@ -98,7 +98,7 @@ The integration UI is available in **English** and **German**. Home Assistant au
 | Auth success code | `code=0` (auth endpoint only) |
 | Data success code | `code=10000` (data / control / poll endpoints) |
 
-> ⚠️ **Critical:** Every new token request invalidates the previous token immediately. The integration enforces a single `ConfigEntry` (`single_config_entry: true`) and only fetches a new token when the current one is within 1 hour of expiry.
+> **Critical:** Every new token request invalidates the previous token immediately. The integration enforces a single `ConfigEntry` (`single_config_entry: true`) and only fetches a new token when the current one is within 1 hour of expiry.
 
 ### API Error Codes (Developer Portal Appendix 1)
 
@@ -137,6 +137,23 @@ See [SECURITY.md](SECURITY.md) for a critical analysis of credential storage, kn
 
 ## Troubleshooting
 
+### Icon missing in HACS store
+
+**Symptom:** HACS shows a gray "icon not available" placeholder for SolaxCloud EV Charger in the store or downloads list.
+
+**Cause:** Starting with Home Assistant 2026.3, custom integrations ship brand icons locally under `custom_components/<domain>/brand/`. Home Assistant serves them through `/api/brands/integration/<domain>/icon.png`. The `home-assistant/brands` CDN no longer accepts icons for new custom integrations. HACS still resolves store icons via the legacy CDN path in some views, so inline brand assets may not appear there yet. This is a known HACS limitation — see [hacs/integration#5223](https://github.com/hacs/integration/issues/5223).
+
+**Fix:** No action required on your side. The integration bundles the correct brand assets under `custom_components/solax_cloud_evc/brand/`. After installation on Home Assistant 2026.3 or newer, the Solax icon should appear in **Settings → Devices & Services** and during the config flow.
+
+To verify that Home Assistant serves the bundled icon:
+
+```bash
+curl -H "Authorization: Bearer <HA_LONG_LIVED_TOKEN>" \
+  http://<HA_HOST>:8123/api/brands/integration/solax_cloud_evc/icon.png
+```
+
+A `200` response with `image/png` confirms the brand assets are working in Home Assistant.
+
 ### Integration not loading / `code=10402` errors
 
 **Symptom:** HA logs show `SolaxCloud API error: unknown error (code=10402)` or
@@ -152,7 +169,7 @@ persists beyond one poll cycle, check that no other client is continuously fetch
 
 ### Re-authentication required
 
-**Symptom:** HA shows a "Re-authentication required" notification for SolaxCloud API.
+**Symptom:** HA shows a "Re-authentication required" notification for SolaxCloud EV Charger.
 
 **Cause:** The `client_secret` was rotated in the Developer Portal, or the credentials
 are no longer valid (`code=10400`).
@@ -187,7 +204,7 @@ statistics" for the affected period, then re-enable.
 The integration supports Home Assistant's built-in diagnostics export.
 
 **How to export:**
-Settings → Devices & Services → SolaxCloud API → Download Diagnostics
+Settings → Devices & Services → SolaxCloud EV Charger → Download Diagnostics
 
 The export includes:
 - Integration config (token masked, EVC serial number masked)
