@@ -4,6 +4,13 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Changed
+- **Per-entity staleness** — after a failed poll, live values (Charging Power, Current L1–L3, Session Duration) stay available for 15 minutes only, so a frozen power value is never shown for long; energy counters, status, mode and selects are bridged for up to 2 hours (`STALE_TOLERANCE_SHORT` / `STALE_TOLERANCE_LONG`, replaces the single 30-minute `STALE_TOLERANCE`)
+
+### Added
+- Test suite based on `pytest-homeassistant-custom-component` (`tests/`, `requirements_test.txt`) covering setup, retries, bridging, per-entity staleness, the energy counter guard, error classification and diagnostics
+- GitHub workflow `Tests` running the suite on push and pull requests
+
 ## [1.2.0] — 2026-10-14
 
 ### Added
@@ -13,7 +20,7 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ### Changed
 - **Data polls are retried** on transient errors (network errors, timeouts, HTTP 5xx, `10001`, `10200`, `11500`, empty result, token refresh after `401`/`10402`) — up to 3 attempts per cycle (after 10 s and 30 s). Rate limits (`10406`) are not retried
-- **Short outages no longer make entities unavailable** — after a failed poll the last good data is served for up to 30 minutes (`STALE_TOLERANCE`) after the last successful poll
+- **Short outages no longer make entities unavailable** — after a failed poll the last good data is served for up to 30 minutes (`STALE_TOLERANCE`) after the last successful poll *(refined in a later release, see above)*
 - All HTTP requests use Home Assistant's shared aiohttp session with a 30 s timeout instead of a new session without timeout per request
 
 ### Fixed

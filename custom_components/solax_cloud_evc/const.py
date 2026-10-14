@@ -19,8 +19,11 @@ DEFAULT_SCAN_INTERVAL = 300  # 5 minutes (API rate limit: 10 req/min)
 # Robustness of data polls
 REQUEST_TIMEOUT = 30            # seconds — total timeout per HTTP request
 DATA_RETRY_DELAYS = (10, 30)    # seconds — waits before the 2nd and 3rd attempt of a data poll
-STALE_TOLERANCE = 1800          # seconds — keep serving the last good data this long after the
-                                # last successful poll before entities turn unavailable
+# How long after the last successful poll an entity keeps showing the last good value.
+# Counters and states stay meaningful for a while; live values (power, current) must
+# not freeze, so they turn unavailable much earlier.
+STALE_TOLERANCE_LONG = 7200     # seconds — energy counters, status, mode, timestamps
+STALE_TOLERANCE_SHORT = 900     # seconds — live values: power, currents, session duration
 # API codes treated as transient in data polls (retried, then bridged with last good data)
 TRANSIENT_API_CODES = frozenset({10001, 10200, 11500})
 

@@ -39,7 +39,15 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_EVC_SN, DOMAIN, EVC_STATUS_MAP, EVC_WORKING_MODE_MAP, _evc_device_info
+from .const import (
+    CONF_EVC_SN,
+    DOMAIN,
+    EVC_STATUS_MAP,
+    EVC_WORKING_MODE_MAP,
+    STALE_TOLERANCE_LONG,
+    STALE_TOLERANCE_SHORT,
+    _evc_device_info,
+)
 from .coordinator import SolaxCoordinator
 
 # Limit concurrent update calls to 1 — appropriate for cloud API to avoid rate limiting
@@ -51,6 +59,8 @@ class SolaxSensorEntityDescription(SensorEntityDescription):
     """Extends SensorEntityDescription with a typed value function."""
 
     value_fn: Callable[[dict[str, Any]], Any]
+    # Seconds after the last successful poll during which the last value is still shown
+    stale_tolerance: int = STALE_TOLERANCE_LONG
 
 
 EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
@@ -75,6 +85,7 @@ EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,   # API delivers W for businessType=1
         icon="mdi:lightning-bolt",
+        stale_tolerance=STALE_TOLERANCE_SHORT,
         value_fn=lambda d: d.get("chargingPower"),
     ),
     SolaxSensorEntityDescription(
@@ -102,6 +113,7 @@ EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         icon="mdi:timer",
+        stale_tolerance=STALE_TOLERANCE_SHORT,
         value_fn=lambda d: d.get("chargingTimeThisSession"),
     ),
     SolaxSensorEntityDescription(
@@ -111,6 +123,7 @@ EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         icon="mdi:current-ac",
+        stale_tolerance=STALE_TOLERANCE_SHORT,
         value_fn=lambda d: d.get("l1Current"),
     ),
     SolaxSensorEntityDescription(
@@ -120,6 +133,7 @@ EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         icon="mdi:current-ac",
+        stale_tolerance=STALE_TOLERANCE_SHORT,
         value_fn=lambda d: d.get("l2Current"),
     ),
     SolaxSensorEntityDescription(
@@ -129,6 +143,7 @@ EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         icon="mdi:current-ac",
+        stale_tolerance=STALE_TOLERANCE_SHORT,
         value_fn=lambda d: d.get("l3Current"),
     ),
     SolaxSensorEntityDescription(
@@ -222,8 +237,12 @@ class SolaxSensorEntity(CoordinatorEntity[SolaxCoordinator], SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Mark unavailable when coordinator has no data or last update failed."""
-        return self.coordinator.last_update_success and self.coordinator.data is not None
+        """Unavailable without data, after a failed update, or when the bridged data
+        is older than this entity's stale_tolerance (live values freeze early)."""
+        if not self.coordinator.last_update_success or self.coordinator.data is None:
+            return False
+        age = self.coordinator.data_age()
+        return age is None or age <= self.entity_description.stale_tolerance
 
 
 class SolaxPollHealthSensor(CoordinatorEntity[SolaxCoordinator], SensorEntity):

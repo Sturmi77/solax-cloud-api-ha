@@ -180,12 +180,18 @@ are no longer valid (`code=10400`).
 
 ### Sensors show "Unavailable"
 
-**Symptom:** All SolaxCloud sensors show "Unavailable" in HA.
+**Symptom:** SolaxCloud sensors show "Unavailable" in HA.
 
-**Cause:** Data polls have been failing for more than 30 minutes. Shorter outages are
-bridged: transient errors (network, timeout, `10001`, `10200`, `11500`, token refresh)
-are retried twice within the same poll, and if the poll still fails the last good data
-is kept for up to 30 minutes.
+**Cause:** Data polls have been failing for a while. Transient errors (network, timeout,
+`10001`, `10200`, `11500`, token refresh) are retried twice within the same poll; if the
+poll still fails, the last good data is kept, but each sensor only shows it for a limited
+time after the last successful poll:
+
+| Sensors | Kept for |
+|---------|----------|
+| Charging Power, Current L1–L3, Session Duration (live values) | 15 minutes |
+| Total/Session Energy, Charging Status, Working Mode, Data Time, selects, number | 2 hours |
+| EVC Poll Failures | always available |
 
 **Fix:** Check the diagnostic sensor **EVC Poll Failures** — its attributes show
 `last_error`, `last_error_time` and `last_success_time`. Rate limits (`10406`) are not
