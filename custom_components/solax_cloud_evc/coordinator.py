@@ -17,6 +17,14 @@ Key design decisions:
   code=10406 is the only true rate-limit code per official docs.
   Commands raise HomeAssistantError; data polls raise UpdateFailed. See const.py.
 - Client-side command guard: COMMAND_MIN_INTERVAL enforced before each API command call.
+- Data polls are retried on transient errors (network, timeout, 10001/10200/11500,
+  token refresh) and a failed poll is bridged with the last good data for
+  STALE_TOLERANCE seconds, so a single cloud hiccup no longer makes every entity
+  unavailable. Poll health (consecutive failures, last error) is exposed for
+  diagnostics and a dedicated sensor.
+- All HTTP calls share HA's aiohttp session with an explicit REQUEST_TIMEOUT.
+- totalChargeEnergy is guarded against 0/None/decreasing values so a glitch never
+  looks like a meter reset to the TOTAL_INCREASING statistics.
 
 See ARCHITECTURE.md §6 and SECURITY.md §2 for details.
 """
@@ -27,14 +35,16 @@ import logging
 import asyncio
 import time
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     API_AUTH_SUCCESS_CODE,
@@ -51,17 +61,25 @@ from .const import (
     CONF_CLIENT_SECRET,
     CONF_EVC_SN,
     CONF_TOKEN_EXPIRES,
+    DATA_RETRY_DELAYS,
     DATA_URL,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_TOKEN_LIFETIME,
     BUSINESS_TYPE_RESIDENTIAL,
     DEVICE_TYPE_EVC,
     DOMAIN,
+    REQUEST_TIMEOUT,
+    STALE_TOLERANCE,
     TOKEN_REFRESH_BUFFER,
     TOKEN_URL,
+    TRANSIENT_API_CODES,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _TransientPollError(UpdateFailed):
+    """A data poll failure worth retrying within the same update cycle."""
 
 
 def _is_rate_limited_response(resp: dict) -> bool:
@@ -113,8 +131,16 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._token_expires: float = 0.0
         self._last_command_time: float = 0.0
         self._postpone_poll_until: float = 0.0   # skip polls until this monotonic timestamp
+        self._session = async_get_clientsession(hass)
+        self._timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
         # Raw (unfiltered) API response — stored for diagnostics export
         self.raw_api_response: dict | None = None
+        # Poll health — exposed via diagnostics and the "EVC Poll Failures" sensor
+        self.consecutive_failures: int = 0
+        self.total_failures: int = 0
+        self.last_error: str | None = None
+        self.last_error_time: datetime | None = None
+        self.last_success_time: datetime | None = None
 
     # ── Token Management ─────────────────────────────────────────────────────
 
@@ -166,12 +192,13 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             "grant_type": "client_credentials",
         }
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(TOKEN_URL, data=payload) as resp:
-                    resp.raise_for_status()
-                    result = await resp.json()
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"SolaxCloud: Token fetch failed: {err}") from err
+            async with self._session.post(
+                TOKEN_URL, data=payload, timeout=self._timeout
+            ) as resp:
+                resp.raise_for_status()
+                result = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise _TransientPollError(f"SolaxCloud: Token fetch failed: {err!r}") from err
 
         # Auth endpoint: code=0 on success, code=10400 on bad credentials.
         # access_token is flat inside result (result.access_token), not nested.
@@ -234,8 +261,10 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
     async def _async_update_data(self) -> dict:
         """Fetch EVC realtime data — called every DEFAULT_SCAN_INTERVAL seconds.
 
-        Raises UpdateFailed on any error so HA marks the integration unavailable
-        and retries on the next interval.
+        Transient failures are retried (DATA_RETRY_DELAYS). If the poll still
+        fails, the last good data is served for up to STALE_TOLERANCE seconds
+        after the last success so entities stay available through short cloud
+        outages; after that UpdateFailed marks them unavailable.
         """
         # Skip poll if a command was sent very recently — avoids hitting the API
         # rate limit by polling immediately after a command in the same burst window.
@@ -249,6 +278,87 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 return self.data
             raise UpdateFailed("SolaxCloud: Poll skipped — command cooldown active")
 
+        try:
+            result = await self._fetch_realtime_with_retry()
+        except UpdateFailed as err:
+            self._record_failure(err)
+            if self._can_bridge_failure():
+                _LOGGER.warning(
+                    "SolaxCloud: Poll failed (%d in a row), keeping last data from %s: %s",
+                    self.consecutive_failures,
+                    self.last_success_time.isoformat() if self.last_success_time else "n/a",
+                    err,
+                )
+                return self.data
+            raise
+
+        if self.consecutive_failures:
+            _LOGGER.info(
+                "SolaxCloud: Poll recovered after %d failed attempt(s)",
+                self.consecutive_failures,
+            )
+        self.consecutive_failures = 0
+        self.last_success_time = dt_util.utcnow()
+        return self._sanitize(result)
+
+    def _record_failure(self, err: Exception) -> None:
+        """Track poll health for diagnostics and the poll-failure sensor."""
+        self.consecutive_failures += 1
+        self.total_failures += 1
+        self.last_error = str(err)
+        self.last_error_time = dt_util.utcnow()
+
+    def _can_bridge_failure(self) -> bool:
+        """Return True while the last good data is recent enough to keep serving."""
+        if self.data is None or self.last_success_time is None:
+            return False
+        age = (dt_util.utcnow() - self.last_success_time).total_seconds()
+        return age < STALE_TOLERANCE
+
+    def _sanitize(self, result: dict) -> dict:
+        """Guard the lifetime energy counter against glitches.
+
+        totalChargeEnergy is TOTAL_INCREASING: a 0, a missing value or a drop would
+        be read as a meter reset and corrupt the long-term statistics. Keep the
+        previous value in that case.
+        """
+        previous = (self.data or {}).get("totalChargeEnergy")
+        current = result.get("totalChargeEnergy")
+        if previous is not None and (
+            not isinstance(current, (int, float)) or current <= 0 or current < previous
+        ):
+            _LOGGER.warning(
+                "SolaxCloud: Implausible totalChargeEnergy %s (previous %s) — keeping previous",
+                current,
+                previous,
+            )
+            result = {**result, "totalChargeEnergy": previous}
+        return result
+
+    async def _fetch_realtime_with_retry(self) -> dict:
+        """Fetch realtime data, retrying transient failures within this cycle."""
+        delays = (*DATA_RETRY_DELAYS, None)
+        for attempt, delay in enumerate(delays, start=1):
+            try:
+                return await self._fetch_realtime()
+            except _TransientPollError as err:
+                if delay is None:
+                    raise
+                _LOGGER.debug(
+                    "SolaxCloud: Transient poll error (attempt %d/%d), retrying in %ds: %s",
+                    attempt,
+                    len(delays),
+                    delay,
+                    err,
+                )
+                await asyncio.sleep(delay)
+        raise UpdateFailed("SolaxCloud: Data poll failed")  # not reached
+
+    async def _fetch_realtime(self) -> dict:
+        """Single realtime data request.
+
+        Raises _TransientPollError for errors worth retrying, UpdateFailed otherwise.
+        """
         await self._ensure_token()
 
         evc_sn = self._entry.data.get(CONF_EVC_SN)
@@ -260,34 +370,35 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         headers = {"Authorization": f"bearer {self._token}"}
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    DATA_URL, params=params, headers=headers
-                ) as resp:
-                    if resp.status == 401:
-                        # Token was invalidated externally (e.g. another app fetched a new token)
-                        _LOGGER.warning(
-                            "SolaxCloud: Data request returned 401 — token invalidated, "
-                            "will fetch new token on next update"
-                        )
-                        self._token = None          # force re-fetch on next cycle
-                        self._token_expires = 0.0
-                        raise UpdateFailed("Token invalidated — will refresh on next update")
-                    resp.raise_for_status()
-                    data = await resp.json()
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"SolaxCloud: Data fetch failed: {err}") from err
+            async with self._session.get(
+                DATA_URL, params=params, headers=headers, timeout=self._timeout
+            ) as resp:
+                if resp.status == 401:
+                    # Token was invalidated externally (e.g. another app fetched a new token)
+                    _LOGGER.warning(
+                        "SolaxCloud: Data request returned 401 — token invalidated, "
+                        "fetching a new token"
+                    )
+                    self._token = None          # force re-fetch on the next attempt
+                    self._token_expires = 0.0
+                    raise _TransientPollError("Token invalidated (HTTP 401)")
+                if resp.status >= 500:
+                    raise _TransientPollError(f"SolaxCloud: HTTP {resp.status}")
+                resp.raise_for_status()
+                data = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise _TransientPollError(f"SolaxCloud: Data fetch failed: {err!r}") from err
 
         code = data.get("code")
         if code == API_TOKEN_EXPIRED_CODE:
             _LOGGER.warning(
                 "SolaxCloud: Token expired/invalid (code=10402) — clearing token and ConfigEntry, "
-                "will fetch fresh token on next update"
+                "fetching a fresh token"
             )
             self._token = None
             self._token_expires = 0.0
             # Also clear from ConfigEntry so _load_token_from_entry() does not resurrect
-            # the dead token on the next cycle. Without this, _ensure_token would reload
+            # the dead token on the next attempt. Without this, _ensure_token would reload
             # the stale token from ConfigEntry, see it as "not expired", and skip _fetch_new_token.
             self.hass.config_entries.async_update_entry(
                 self._entry,
@@ -297,21 +408,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                     CONF_TOKEN_EXPIRES: 0.0,
                 },
             )
-            raise UpdateFailed("SolaxCloud: Token expired — will fetch fresh token on next update")
-        if code == API_RATE_LIMIT_CODE:
-            # code=10200 in data poll: log the real message for diagnosis
-            actual_msg = data.get("message", "<no message>")
-            exception_detail = data.get("exception", "<no exception>")
-            _LOGGER.error(
-                "SolaxCloud: Data poll abnormality (code=10200) — "
-                "message='%s' exception='%s' full_response=%s",
-                actual_msg,
-                exception_detail,
-                data,
-            )
-            raise UpdateFailed(
-                f"SolaxCloud: Data poll error (code=10200) — {actual_msg}"
-            )
+            raise _TransientPollError("SolaxCloud: Token expired (code=10402)")
         if _is_rate_limited_response(data):
             exception_msg = data.get("exception", "")
             _LOGGER.warning(
@@ -319,17 +416,31 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 code,
                 exception_msg or "n/a",
             )
+            # Not retried — retrying would only extend the throttling window
             raise UpdateFailed(
-                "SolaxCloud: Rate limit exceeded (max 10 requests/min) — will retry on next interval"
+                f"SolaxCloud: Rate limit exceeded (code={code}) — will retry on next interval"
+            )
+        if code in TRANSIENT_API_CODES:
+            # e.g. code=10200 "Operation abnormality", 11500 "System busy":
+            # log the real message for diagnosis, then retry
+            actual_msg = data.get("message") or data.get("msg") or "<no message>"
+            _LOGGER.warning(
+                "SolaxCloud: Data poll error (code=%s) — message='%s' exception='%s'",
+                code,
+                actual_msg,
+                data.get("exception", "<no exception>"),
+            )
+            raise _TransientPollError(
+                f"SolaxCloud: Data poll error (code={code}) — {actual_msg}"
             )
         if code != API_SUCCESS_CODE:
-            msg = data.get("msg", "unknown error")
+            msg = data.get("message") or data.get("msg") or "unknown error"
             _LOGGER.error("SolaxCloud API error: %s (code=%s)", msg, code)
             raise UpdateFailed(f"SolaxCloud API error: {msg} (code={code})")
 
         result = data.get("result")
         if not result:
-            raise UpdateFailed("SolaxCloud: API returned empty result list")
+            raise _TransientPollError("SolaxCloud: API returned empty result list")
 
         _LOGGER.debug(
             "SolaxCloud: EVC data received — status=%s power=%sW",
@@ -385,17 +496,18 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.debug("SolaxCloud: sending EVC command to %s — %s (attempt %d)", url, payload, _attempt + 1)
 
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, json=payload, headers=headers) as resp:
-                        if resp.status == 401:
-                            self._token = None
-                            self._token_expires = 0.0
-                            raise HomeAssistantError(
-                                "SolaxCloud: Command rejected — token invalidated"
-                            )
-                        resp.raise_for_status()
-                        data = await resp.json()
-            except aiohttp.ClientError as err:
+                async with self._session.post(
+                    url, json=payload, headers=headers, timeout=self._timeout
+                ) as resp:
+                    if resp.status == 401:
+                        self._token = None
+                        self._token_expires = 0.0
+                        raise HomeAssistantError(
+                            "SolaxCloud: Command rejected — token invalidated"
+                        )
+                    resp.raise_for_status()
+                    data = await resp.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 raise HomeAssistantError(
                     f"SolaxCloud: Command failed (network): {err}"
                 ) from err
@@ -497,14 +609,14 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         _LOGGER.debug("SolaxCloud: Polling command result for requestId=%s", request_id)
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    COMMAND_POLL_URL,
-                    json={"requestId": request_id},
-                    headers={"Authorization": f"bearer {self._token}"},
-                ) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
+            async with self._session.post(
+                COMMAND_POLL_URL,
+                json={"requestId": request_id},
+                headers={"Authorization": f"bearer {self._token}"},
+                timeout=self._timeout,
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning(
                 "SolaxCloud: Command poll failed for requestId=%s: %s", request_id, err

@@ -41,6 +41,8 @@ Supports EV Charger (Phase 1), with planned support for Inverter and Battery.
 | EVC Current L1 | `current` | `measurement` | A | No |
 | EVC Current L2 | `current` | `measurement` | A | No |
 | EVC Current L3 | `current` | `measurement` | A | No |
+| EVC Data Time *(diagnostic)* | `timestamp` | — | — | No — time of the measurement in the cloud |
+| EVC Poll Failures *(diagnostic)* | — | `measurement` | — | No — consecutive failed polls, always available |
 
 ---
 
@@ -180,10 +182,14 @@ are no longer valid (`code=10400`).
 
 **Symptom:** All SolaxCloud sensors show "Unavailable" in HA.
 
-**Cause:** The last data fetch failed (any unhandled API error or network issue). HA marks
-the integration unavailable until the next successful poll.
+**Cause:** Data polls have been failing for more than 30 minutes. Shorter outages are
+bridged: transient errors (network, timeout, `10001`, `10200`, `11500`, token refresh)
+are retried twice within the same poll, and if the poll still fails the last good data
+is kept for up to 30 minutes.
 
-**Fix:** Wait 5 minutes for the next poll cycle. Check HA logs for the specific error code.
+**Fix:** Check the diagnostic sensor **EVC Poll Failures** — its attributes show
+`last_error`, `last_error_time` and `last_success_time`. Rate limits (`10406`) are not
+retried and recover on the next poll cycle.
 
 ### Energy Dashboard shows wrong daily values
 
@@ -208,7 +214,8 @@ Settings → Devices & Services → SolaxCloud EV Charger → Download Diagnosti
 
 The export includes:
 - Integration config (token masked, EVC serial number masked)
-- Coordinator state (last update success, poll interval)
+- Coordinator state (last update success, poll interval, consecutive/total failures,
+  last error, last success)
 - Raw API response (useful for debugging missing or unexpected sensor values)
 - List of coordinator data keys
 

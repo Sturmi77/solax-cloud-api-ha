@@ -4,6 +4,20 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- Diagnostic sensor **EVC Poll Failures** — consecutive failed data polls, always available; attributes `last_error`, `last_error_time`, `last_success_time`, `total_failures`
+- Diagnostic sensor **EVC Data Time** — timestamp of the measurement in the cloud (`dataTime`)
+- Diagnostics export includes poll health (consecutive/total failures, last error, last success)
+
+### Changed
+- **Data polls are retried** on transient errors (network errors, timeouts, HTTP 5xx, `10001`, `10200`, `11500`, empty result, token refresh after `401`/`10402`) — up to 3 attempts per cycle (after 10 s and 30 s). Rate limits (`10406`) are not retried
+- **Short outages no longer make entities unavailable** — after a failed poll the last good data is served for up to 30 minutes (`STALE_TOLERANCE`) after the last successful poll
+- All HTTP requests use Home Assistant's shared aiohttp session with a 30 s timeout instead of a new session without timeout per request
+
+### Fixed
+- `totalChargeEnergy` values of 0, missing or lower than the previous reading are ignored — prevents false meter resets in `TOTAL_INCREASING` statistics
+- Diagnostics reported `token_present: false` although a token was stored (looked up key `token` instead of `access_token`)
+
 ## [1.1.0] — 2026-06-26
 
 ### Changed

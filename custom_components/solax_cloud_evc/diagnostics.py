@@ -12,7 +12,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import CONF_ACCESS_TOKEN, DOMAIN
 
 # Fields to redact completely from diagnostics output
 _TO_REDACT = {
@@ -54,8 +54,8 @@ async def async_get_config_entry_diagnostics(
             "domain": config_entry.domain,
             "version": config_entry.version,
             "evc_sn_masked": _mask_serial(evc_sn_raw),
-            "token_present": bool(entry_data.get("token")),
-            "token_length": len(str(entry_data.get("token", ""))) if entry_data.get("token") else 0,
+            "token_present": bool(entry_data.get(CONF_ACCESS_TOKEN)),
+            "token_length": len(str(entry_data[CONF_ACCESS_TOKEN])) if entry_data.get(CONF_ACCESS_TOKEN) else 0,
         },
         "coordinator": {
             "available": coordinator is not None,
@@ -73,6 +73,15 @@ async def async_get_config_entry_diagnostics(
                 coordinator.update_interval.total_seconds()
                 if coordinator.update_interval
                 else None
+            ),
+            "consecutive_failures": coordinator.consecutive_failures,
+            "total_failures": coordinator.total_failures,
+            "last_error": coordinator.last_error,
+            "last_error_time": (
+                coordinator.last_error_time.isoformat() if coordinator.last_error_time else None
+            ),
+            "last_success_time": (
+                coordinator.last_success_time.isoformat() if coordinator.last_success_time else None
             ),
         }
     )
