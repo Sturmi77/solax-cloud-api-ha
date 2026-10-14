@@ -28,6 +28,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    EntityCategory,
     UnitOfElectricCurrent,
     UnitOfEnergy,
     UnitOfPower,
@@ -130,6 +131,15 @@ EVC_SENSORS: tuple[SolaxSensorEntityDescription, ...] = (
         icon="mdi:current-ac",
         value_fn=lambda d: d.get("l3Current"),
     ),
+    SolaxSensorEntityDescription(
+        key="dataTime",
+        name="EVC Data Time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:clock-check-outline",
+        # Timestamp of the measurement in the cloud — shows how fresh the data is
+        value_fn=lambda d: dt_util.parse_datetime(d["dataTime"]) if d.get("dataTime") else None,
+    ),
 )
 
 
@@ -143,8 +153,13 @@ async def async_setup_entry(
     evc_sn = entry.data.get(CONF_EVC_SN, "unknown")
 
     async_add_entities(
-        SolaxSensorEntity(coordinator, entry, description, evc_sn)
-        for description in EVC_SENSORS
+        [
+            *(
+                SolaxSensorEntity(coordinator, entry, description, evc_sn)
+                for description in EVC_SENSORS
+            ),
+            SolaxPollHealthSensor(coordinator, entry, evc_sn),
+        ]
     )
 
 
@@ -209,3 +224,49 @@ class SolaxSensorEntity(CoordinatorEntity[SolaxCoordinator], SensorEntity):
     def available(self) -> bool:
         """Mark unavailable when coordinator has no data or last update failed."""
         return self.coordinator.last_update_success and self.coordinator.data is not None
+
+
+class SolaxPollHealthSensor(CoordinatorEntity[SolaxCoordinator], SensorEntity):
+    """Consecutive failed data polls — stays available while the cloud is unreachable.
+
+    0 = last poll succeeded. Attributes carry the last error and timestamps so
+    outages can be diagnosed without searching the log.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "EVC Poll Failures"
+    _attr_icon = "mdi:cloud-alert"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: SolaxCoordinator,
+        entry: ConfigEntry,
+        evc_sn: str,
+    ) -> None:
+        """Initialise the poll health sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_poll_failures"
+        self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
+
+    @property
+    def available(self) -> bool:
+        """Always available — this sensor reports the outage itself."""
+        return True
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of consecutive failed polls."""
+        return self.coordinator.consecutive_failures
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return last error and poll timestamps."""
+        c = self.coordinator
+        return {
+            "last_error": c.last_error,
+            "last_error_time": c.last_error_time.isoformat() if c.last_error_time else None,
+            "last_success_time": c.last_success_time.isoformat() if c.last_success_time else None,
+            "total_failures": c.total_failures,
+        }

@@ -16,6 +16,14 @@ DEFAULT_TOKEN_LIFETIME = 2591999  # ~30 days in seconds
 # Polling
 DEFAULT_SCAN_INTERVAL = 300  # 5 minutes (API rate limit: 10 req/min)
 
+# Robustness of data polls
+REQUEST_TIMEOUT = 30            # seconds — total timeout per HTTP request
+DATA_RETRY_DELAYS = (10, 30)    # seconds — waits before the 2nd and 3rd attempt of a data poll
+STALE_TOLERANCE = 1800          # seconds — keep serving the last good data this long after the
+                                # last successful poll before entities turn unavailable
+# API codes treated as transient in data polls (retried, then bridged with last good data)
+TRANSIENT_API_CODES = frozenset({10001, 10200, 11500})
+
 # ConfigEntry keys
 CONF_CLIENT_ID = "client_id"
 CONF_CLIENT_SECRET = "client_secret"
