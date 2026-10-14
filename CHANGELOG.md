@@ -4,6 +4,8 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-14
+
 ### Added
 - Diagnostic sensor **EVC Poll Failures** — consecutive failed data polls, always available; attributes `last_error`, `last_error_time`, `last_success_time`, `total_failures`
 - Diagnostic sensor **EVC Data Time** — timestamp of the measurement in the cloud (`dataTime`)
