@@ -177,7 +177,8 @@ HA Start
 | `asyncio.sleep` task for command poll | Command result is polled via `asyncio.sleep` + `async_create_task` — `hass.loop.call_later` and `hass.async_call_later` are not used (incompatible with HA async model) |
 | Shared aiohttp session + 30 s timeout | `async_get_clientsession(hass)` instead of a new `ClientSession` per request; `REQUEST_TIMEOUT` stops a hanging cloud call from blocking the update cycle |
 | Retry transient poll errors in-cycle | `_TransientPollError` (network, timeout, HTTP 5xx, `10001`/`10200`/`11500`, empty result, token refresh) → up to 3 attempts after `DATA_RETRY_DELAYS` (10 s, 30 s). Rate limits (`10406`) and other API errors are not retried |
-| Bridge failed polls with last data | After a failed cycle the last good data is returned while it is younger than `STALE_TOLERANCE` (30 min), so one cloud hiccup does not make every entity unavailable — and `utility_meter`/statistics consumers see no gap |
+| Bridge failed polls with last data | After a failed cycle the last good data is returned while it is younger than `STALE_TOLERANCE_LONG` (2 h), so one cloud hiccup does not make every entity unavailable — and `utility_meter`/statistics consumers see no gap |
+| Per-entity staleness | Each sensor description carries `stale_tolerance`; `available` compares it with `coordinator.data_age()`. Live values (power, currents, session duration) use `STALE_TOLERANCE_SHORT` (15 min) so they never freeze for long; counters and states use the long tolerance |
 | Guard `totalChargeEnergy` | 0, missing or decreasing values keep the previous reading — a glitch must never look like a meter reset to `TOTAL_INCREASING` statistics |
 | Poll health exposed | `consecutive_failures`, `last_error`, `last_success_time` in diagnostics and the always-available `EVC Poll Failures` sensor |
 

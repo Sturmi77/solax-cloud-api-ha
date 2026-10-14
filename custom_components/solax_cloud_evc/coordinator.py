@@ -19,8 +19,9 @@ Key design decisions:
 - Client-side command guard: COMMAND_MIN_INTERVAL enforced before each API command call.
 - Data polls are retried on transient errors (network, timeout, 10001/10200/11500,
   token refresh) and a failed poll is bridged with the last good data for
-  STALE_TOLERANCE seconds, so a single cloud hiccup no longer makes every entity
-  unavailable. Poll health (consecutive failures, last error) is exposed for
+  STALE_TOLERANCE_LONG seconds, so a single cloud hiccup no longer makes every entity
+  unavailable. Each entity decides via data_age() how long it shows bridged data
+  (live values such as power only for STALE_TOLERANCE_SHORT). Poll health (consecutive failures, last error) is exposed for
   diagnostics and a dedicated sensor.
 - All HTTP calls share HA's aiohttp session with an explicit REQUEST_TIMEOUT.
 - totalChargeEnergy is guarded against 0/None/decreasing values so a glitch never
@@ -69,7 +70,7 @@ from .const import (
     DEVICE_TYPE_EVC,
     DOMAIN,
     REQUEST_TIMEOUT,
-    STALE_TOLERANCE,
+    STALE_TOLERANCE_LONG,
     TOKEN_REFRESH_BUFFER,
     TOKEN_URL,
     TRANSIENT_API_CODES,
@@ -262,9 +263,9 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         """Fetch EVC realtime data — called every DEFAULT_SCAN_INTERVAL seconds.
 
         Transient failures are retried (DATA_RETRY_DELAYS). If the poll still
-        fails, the last good data is served for up to STALE_TOLERANCE seconds
-        after the last success so entities stay available through short cloud
-        outages; after that UpdateFailed marks them unavailable.
+        fails, the last good data is served for up to STALE_TOLERANCE_LONG seconds
+        after the last success; each entity limits this further via data_age().
+        After that UpdateFailed marks all entities unavailable.
         """
         # Skip poll if a command was sent very recently — avoids hitting the API
         # rate limit by polling immediately after a command in the same burst window.
@@ -308,12 +309,18 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self.last_error = str(err)
         self.last_error_time = dt_util.utcnow()
 
+    def data_age(self) -> float | None:
+        """Seconds since the last successful poll, or None before the first one."""
+        if self.last_success_time is None:
+            return None
+        return (dt_util.utcnow() - self.last_success_time).total_seconds()
+
     def _can_bridge_failure(self) -> bool:
         """Return True while the last good data is recent enough to keep serving."""
-        if self.data is None or self.last_success_time is None:
+        if self.data is None:
             return False
-        age = (dt_util.utcnow() - self.last_success_time).total_seconds()
-        return age < STALE_TOLERANCE
+        age = self.data_age()
+        return age is not None and age < STALE_TOLERANCE_LONG
 
     def _sanitize(self, result: dict) -> dict:
         """Guard the lifetime energy counter against glitches.
