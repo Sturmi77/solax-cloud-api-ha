@@ -34,5 +34,22 @@
       "already_configured": "SolaxCloud API is already configured. Only one instance is supported.",
       "reauth_successful": "Re-authentication successful. The integration has been reloaded."
     }
+  },
+  "exceptions": {
+    "command_cooldown": {
+      "message": "{action}: please wait {seconds} s before sending another command (SolaX API allows only a few commands per minute)."
+    },
+    "command_network": {
+      "message": "{action} could not be sent – SolaX Cloud not reachable: {error}"
+    },
+    "command_token_invalid": {
+      "message": "{action} was not sent – the SolaX Cloud access token was invalid and has been reset. Please try again in a few seconds."
+    },
+    "command_rate_limit": {
+      "message": "{action} was not sent – SolaX API rate limit still reached after {attempts} attempts. Please try again in a minute."
+    },
+    "command_rejected": {
+      "message": "{action} rejected by SolaX Cloud: {message} (code {code}). {hint}"
+    }
   }
 }

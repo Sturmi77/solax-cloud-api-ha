@@ -95,7 +95,7 @@ Authorization: bearer <access_token>
 
 | API Field | HA Entity Name | Unit | Notes |
 |-----------|---------------|------|-------|
-| `deviceStatus` | EVC Charging Status | — | 0=Waiting, 1=Charging, 2=Finished, 3=Error |
+| `deviceStatus` | EVC Charging Status | — | OCPP-style: 0=Available, 1=Preparing, 2=Charging, 3=Finishing, 4=Faulted, 5=Unavailable, 7=Suspended EV, 8=Suspended EVSE, 9=Update … (full list in `const.py`; verified live 2026-10-16) |
 | `chargingPower` | EVC Charging Power | W | Instantaneous; verified in W for `businessType=1` |
 | `totalChargeEnergy` | EVC Total Charge Energy | kWh | Monotonically increasing; verified value 8739.8 kWh |
 | `chargingEnergyThisSession` | EVC Session Energy | kWh | Resets to 0 on new session start |
@@ -299,11 +299,28 @@ Commands go through a two-phase delivery:
 
 ```
 1. POST control endpoint → code=10000 + requestId
+   (any other code → translated HomeAssistantError naming the command, code,
+    API message and a hint derived from the last known EVC status)
 2. asyncio.sleep(COMMAND_POLL_DELAY=5s)
 3. POST /openapi/apiRequestLog/listByCondition {requestId}
    → status: 1=Pending, 2=Success, 3=Delivered, 4=Failed
-4. On status=4: fire persistent HA notification
+   still Pending / poll error → poll again after COMMAND_POLL_RETRY_DELAYS (10 s, 20 s)
+4. Success/Delivered → done, an older command notification is dismissed
+5. Failed or never confirmed → if the command has an expected state
+   (work mode: deviceWorkingMode), wait COMMAND_VERIFY_DELAY (20 s), refresh the
+   realtime data and compare. Matches → warning in the log only.
+6. Otherwise: ERROR log with all details + one persistent notification
+   (fixed id, a newer one replaces the older) in German or English
+   (command_feedback.py): command, time sent, cloud result incl. extra result
+   fields, EVC state (status, mode, power, data time), cross-check result and a
+   likely cause derived from the EVC status (e.g. Finishing → vehicle full).
 ```
+
+**Why the cross-check:** On 2026-10-16 the cloud reported `status=4` five seconds
+after a "Work Mode → ECO" command, although the EVC switched to ECO and started
+charging at the same moment. A second ECO command right after the vehicle reached
+100 % (EVC status Finishing) was reported as failed as well — correctly, nothing
+could be charged. Only the second case deserves a notification.
 
 **Why `asyncio.sleep` instead of `hass.async_call_later`:**  
 `hass.loop.call_later` does not exist in modern HA. `hass.async_call_later` requires

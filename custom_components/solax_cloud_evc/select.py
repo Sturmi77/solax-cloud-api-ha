@@ -139,7 +139,10 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         )
 
         await self.coordinator.async_send_evc_command(
-            EVC_CONTROL_WORK_MODE_URL, payload
+            EVC_CONTROL_WORK_MODE_URL,
+            payload,
+            action=f"Work Mode → {option}" + (f" ({default_gear} A)" if default_gear else ""),
+            expected={"deviceWorkingMode": work_mode_int},
         )
 
         # Optimistic update — show new state immediately without waiting for next poll
@@ -205,7 +208,7 @@ class EvcStartModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         )
 
         await self.coordinator.async_send_evc_command(
-            EVC_CONTROL_START_MODE_URL, payload
+            EVC_CONTROL_START_MODE_URL, payload, action=f"Start Mode → {option}"
         )
 
         # Persist selection locally — API does not report it back in realtime_data
@@ -264,7 +267,9 @@ class EvcChargeSceneSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
             "SolaxCloud: Setting EVC charge scene → %s (chargerScene=%s)", option, scene_int
         )
 
-        await self.coordinator.async_send_evc_command(EVC_CONTROL_SCENE_URL, payload)
+        await self.coordinator.async_send_evc_command(
+            EVC_CONTROL_SCENE_URL, payload, action=f"Charge Scene → {option}"
+        )
 
         # Persist selection locally — API does not report it back in realtime_data
         self._attr_current_option = option

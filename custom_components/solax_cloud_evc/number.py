@@ -163,8 +163,11 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
             mode_name,
         )
 
+        # No expected state — the realtime data does not report the current gear
         await self.coordinator.async_send_evc_command(
-            EVC_CONTROL_WORK_MODE_URL, payload
+            EVC_CONTROL_WORK_MODE_URL,
+            payload,
+            action=f"Charging Current → {target_gear} A ({mode_name})",
         )
 
         # Optimistic update — show new value immediately without waiting for next poll

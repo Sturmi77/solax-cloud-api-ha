@@ -39,14 +39,29 @@ DEVICE_TYPE_INVERTER = 1
 DEVICE_TYPE_BATTERY = 2
 DEVICE_TYPE_EVC = 4
 
-# EVC deviceStatus mapping (from X3-EVC User Manual + Developer API docs)
+# EVC deviceStatus mapping — OCPP-style connector states, same numbering as the
+# EVC's own Modbus register (solax_modbus plugin_solax_ev_charger). Verified live
+# 2026-10-16: 2 while the car draws 8 kW, 3 right after the car reached 100 %.
+# Releases up to 1.3.0 used a mapping shifted by one (2 = "Complete", 3 = "Fault").
 EVC_STATUS_MAP = {
-    0: "Waiting",      # Idle — no EV connected or ready
-    1: "Charging",     # EV actively charging
-    2: "Complete",     # Charging finished (EV full or target reached)
-    3: "Fault",        # Error state — fault light on
-    4: "Unavailable",  # Remote updating / not available
-    5: "Stop",         # EV connected but not charging (manually stopped)
+    0: "Available",             # no vehicle connected
+    1: "Preparing",             # vehicle connected, charging not started yet
+    2: "Charging",              # vehicle is charging
+    3: "Finishing",             # session finished (vehicle full / limit reached)
+    4: "Faulted",               # charger reports a fault
+    5: "Unavailable",
+    6: "Reserved",
+    7: "Suspended EV",          # vehicle paused charging
+    8: "Suspended EVSE",        # charger paused charging (e.g. no PV surplus)
+    9: "Update",                # firmware update running
+    10: "Card Activation",
+    11: "Start Delay",
+    12: "Charge Paused",
+    13: "Stopping",
+    14: "Occupied",
+    15: "Waiting for Response",
+    16: "Discharging",
+    17: "Phase Switching",
 }
 
 # EVC deviceWorkingMode mapping (charging mode)
@@ -89,7 +104,16 @@ COMMAND_MIN_INTERVAL = 6.0  # seconds — conservative guard for 10 commands/min
 
 # Command result polling
 COMMAND_POLL_URL = "https://openapi-eu.solaxcloud.com/openapi/apiRequestLog/listByCondition"
-COMMAND_POLL_DELAY = 5            # seconds to wait before polling
+COMMAND_POLL_DELAY = 5            # seconds to wait before the first result poll
+# Further result polls (seconds after the previous one) while the cloud still reports
+# "Pending" — the first "Failed" after 5 s turned out to be unreliable (2026-10-16:
+# reported Failed although the EVC switched to ECO and started charging).
+COMMAND_POLL_RETRY_DELAYS = (10, 20)
+# After a negative or missing confirmation: wait this long, refresh the realtime
+# data and check whether the EVC adopted the requested state anyway.
+COMMAND_VERIFY_DELAY = 20
+# One notification for command problems — a newer one replaces the older
+COMMAND_NOTIFICATION_ID = f"{DOMAIN}_command_failed"
 
 # Command delivery status codes (Appendix 8)
 COMMAND_STATUS_MAP: dict[int, str] = {
