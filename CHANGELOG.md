@@ -4,6 +4,14 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **EVC Charging Status showed wrong states** — the `deviceStatus` mapping was shifted by one: an active charging session was shown as "Complete" and a finished session (vehicle full) as "Fault". The sensor now uses the OCPP-style states of the EVC (Available, Preparing, Charging, Finishing, Faulted, Unavailable, Suspended EV, Suspended EVSE, Update, …). **Breaking for automations** that compare against the old texts "Waiting", "Complete", "Fault" or "Stop"
+- **False "Command Failed" notifications** — the SolaX Cloud sometimes reports a command as failed although the charger executed it. Work-mode commands are now cross-checked against fresh realtime data before anything is reported; a pending result is polled up to three times (after 5, 15 and 35 s)
+
+### Changed
+- **Command notifications explain what happened** — one notification (a newer one replaces the older, a later successful command removes it) in German or English with the command, time sent, the cloud's answer, the charger state (status, mode, power, data time), the cross-check result and a likely cause, e.g. "charging session already finished (vehicle full)"
+- **Command errors name the command and the cause** — errors shown when a command cannot be sent (cooldown, network, token, rate limit, rejection by the cloud) are translated (de/en), name the command (e.g. "Work Mode → ECO (16 A)") and, for rejections, include the API message, code and a hint from the charger state; the log contains payload, charger state and full API response
+
 ## [1.3.0] — 2026-10-16
 
 ### Changed

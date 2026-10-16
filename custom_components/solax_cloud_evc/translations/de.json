@@ -26,5 +26,22 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "command_cooldown": {
+      "message": "{action}: Bitte {seconds} s warten, bevor ein weiterer Befehl gesendet wird (die SolaX-API erlaubt nur wenige Befehle pro Minute)."
+    },
+    "command_network": {
+      "message": "{action} konnte nicht gesendet werden – SolaX Cloud nicht erreichbar: {error}"
+    },
+    "command_token_invalid": {
+      "message": "{action} wurde nicht gesendet – das Zugriffstoken der SolaX Cloud war ungültig und wurde zurückgesetzt. Bitte in einigen Sekunden erneut versuchen."
+    },
+    "command_rate_limit": {
+      "message": "{action} wurde nicht gesendet – Aufruflimit der SolaX-API auch nach {attempts} Versuchen erreicht. Bitte in einer Minute erneut versuchen."
+    },
+    "command_rejected": {
+      "message": "{action} von der SolaX Cloud abgelehnt: {message} (Code {code}). {hint}"
+    }
   }
 }

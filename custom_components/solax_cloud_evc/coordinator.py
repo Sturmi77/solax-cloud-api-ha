@@ -39,9 +39,11 @@ import asyncio
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
+from typing import Any
 
 import aiohttp
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -50,14 +52,16 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     API_AUTH_SUCCESS_CODE,
-    API_RATE_LIMIT_CODE,
     API_RATE_LIMIT_CODE_OFFICIAL,
     API_SUCCESS_CODE,
     API_TOKEN_EXPIRED_CODE,
     COMMAND_MIN_INTERVAL,
+    COMMAND_NOTIFICATION_ID,
     COMMAND_POLL_DELAY,
+    COMMAND_POLL_RETRY_DELAYS,
     COMMAND_POLL_URL,
     COMMAND_STATUS_MAP,
+    COMMAND_VERIFY_DELAY,
     CONF_ACCESS_TOKEN,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -76,6 +80,7 @@ from .const import (
     TOKEN_URL,
     TRANSIENT_API_CODES,
 )
+from .command_feedback import build_failure_notification, describe_evc_state, status_hint
 from .dns_fallback import async_create_fallback_session
 
 _LOGGER = logging.getLogger(__name__)
@@ -130,6 +135,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._entry = entry
         self._client_id: str = entry.data[CONF_CLIENT_ID]
         self._client_secret: str = entry.data[CONF_CLIENT_SECRET]
+        self._evc_sn: str = entry.data.get(CONF_EVC_SN, "")
         self._token: str | None = None
         self._token_expires: float = 0.0
         self._last_command_time: float = 0.0
@@ -461,25 +467,42 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self.raw_api_response = deepcopy(data) if isinstance(data, dict) else None
         return result[0]
 
-    async def async_send_evc_command(self, url: str, payload: dict) -> dict:
+    async def async_send_evc_command(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        action: str,
+        expected: dict[str, Any] | None = None,
+    ) -> dict:
         """Send a control command to the SolaxCloud EVC API.
 
-        Ensures a valid token is present before sending.
-        Schedules async_poll_command_result() to run after COMMAND_POLL_DELAY
-        seconds to check delivery and surface failures as persistent notifications.
+        action   — human-readable description used in errors, log and notification,
+                   e.g. "Work Mode → ECO (16 A)".
+        expected — realtime-data fields the EVC should show once the command took
+                   effect (e.g. {"deviceWorkingMode": 2}); used to cross-check a
+                   negative or missing confirmation from the cloud.
+
+        Ensures a valid token is present before sending. Tracks the delivery result
+        in the background (see _async_track_command).
 
         Returns the full API response dict.
 
         Raises:
-            HomeAssistantError  — on API-level error (code != 10000)
-            aiohttp.ClientError — on network error
+            HomeAssistantError — on API-level, rate-limit, token or network error
+                                 (translated, names the action)
         """
         # Client-side rate-limit guard — reject early if last command was too recent
         now = time.monotonic()
         elapsed = now - self._last_command_time
         if elapsed < COMMAND_MIN_INTERVAL:
             raise HomeAssistantError(
-                f"SolaxCloud: Rate limit — please wait {COMMAND_MIN_INTERVAL - elapsed:.0f}s before sending another command"
+                translation_domain=DOMAIN,
+                translation_key="command_cooldown",
+                translation_placeholders={
+                    "action": action,
+                    "seconds": f"{COMMAND_MIN_INTERVAL - elapsed:.0f}",
+                },
             )
         self._last_command_time = now
 
@@ -488,7 +511,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         # _async_update_data checks before fetching.
         self._postpone_poll_until = time.monotonic() + COMMAND_MIN_INTERVAL
 
-        # Retry loop — if the API returns rate-limit (code=10200/10406), wait and retry
+        # Retry loop — if the API returns rate-limit (code=10406), wait and retry
         # automatically instead of surfacing an error to the user.
         # Max 3 attempts: initial + 2 retries with exponential backoff (15s, 30s).
         _max_retries = 3
@@ -503,7 +526,10 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 "Content-Type": "application/json",
             }
 
-            _LOGGER.debug("SolaxCloud: sending EVC command to %s — %s (attempt %d)", url, payload, _attempt + 1)
+            _LOGGER.debug(
+                "SolaxCloud: sending EVC command '%s' to %s — %s (attempt %d)",
+                action, url, payload, _attempt + 1,
+            )
 
             try:
                 async with self._session.post(
@@ -513,19 +539,29 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                         self._token = None
                         self._token_expires = 0.0
                         raise HomeAssistantError(
-                            "SolaxCloud: Command rejected — token invalidated"
+                            translation_domain=DOMAIN,
+                            translation_key="command_token_invalid",
+                            translation_placeholders={"action": action},
                         )
                     resp.raise_for_status()
                     data = await resp.json()
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                error = str(err) or type(err).__name__
+                _LOGGER.error(
+                    "SolaxCloud: Command '%s' not sent — network error: %s", action, error
+                )
                 raise HomeAssistantError(
-                    f"SolaxCloud: Command failed (network): {err}"
+                    translation_domain=DOMAIN,
+                    translation_key="command_network",
+                    translation_placeholders={"action": action, "error": error},
                 ) from err
 
             code = data.get("code")
             if code == API_TOKEN_EXPIRED_CODE:
                 _LOGGER.warning(
-                    "SolaxCloud: Token expired/invalid (code=10402) — clearing token and ConfigEntry, command not sent"
+                    "SolaxCloud: Token expired/invalid (code=10402) — clearing token "
+                    "and ConfigEntry, command '%s' not sent",
+                    action,
                 )
                 self._token = None
                 self._token_expires = 0.0
@@ -538,13 +574,15 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                     },
                 )
                 raise HomeAssistantError(
-                    "SolaxCloud: Token expired — please retry the command in a few seconds"
+                    translation_domain=DOMAIN,
+                    translation_key="command_token_invalid",
+                    translation_placeholders={"action": action},
                 )
             if _is_rate_limited_response(data):
-                exception_msg = data.get("exception", "")
                 if _attempt < _max_retries - 1:
                     _LOGGER.warning(
-                        "SolaxCloud: Rate limit hit (code=%s, attempt=%d/%d) — retrying in %ds",
+                        "SolaxCloud: Rate limit hit for '%s' (code=%s, attempt=%d/%d) — retrying in %ds",
+                        action,
                         code,
                         _attempt + 1,
                         _max_retries,
@@ -554,64 +592,170 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                     _attempt += 1
                     _retry_delay = min(_retry_delay * 2, 60)
                     continue
-                raise HomeAssistantError(
-                    f"SolaxCloud: Rate limit exceeded after {_max_retries} attempts — please try again in a minute"
-                )
-            if code == API_RATE_LIMIT_CODE:
-                # code=10200 = "Operation abnormality" — NOT a rate limit per API docs.
-                # Log the actual `message` field so we can diagnose the real cause.
-                # Possible causes: wrong EVC state, missing parameter, OCPP mode active,
-                # invalid payload, device offline, or unsupported operation.
-                actual_msg = data.get("message", "<no message>")
-                exception_detail = data.get("exception", "<no exception>")
                 _LOGGER.error(
-                    "SolaxCloud: EVC command abnormality (code=10200) — "
-                    "message='%s' exception='%s' full_response=%s",
+                    "SolaxCloud: Command '%s' not sent — rate limit after %d attempts: %s",
+                    action, _max_retries, data,
+                )
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="command_rate_limit",
+                    translation_placeholders={
+                        "action": action,
+                        "attempts": str(_max_retries),
+                    },
+                )
+            if code != API_SUCCESS_CODE:
+                # code=10200 = "Operation abnormality" — NOT a rate limit per API docs;
+                # the real cause is in `message`/`exception` (wrong EVC state, OCPP
+                # mode active, invalid payload, device offline, ...).
+                actual_msg = data.get("message") or data.get("msg") or "—"
+                _LOGGER.error(
+                    "SolaxCloud: Command '%s' rejected (code=%s) — message='%s' "
+                    "exception='%s' payload=%s evc_state=[%s] full_response=%s",
+                    action,
+                    code,
                     actual_msg,
-                    exception_detail,
+                    data.get("exception", ""),
+                    payload,
+                    describe_evc_state(self.data, "en"),
                     data,
                 )
                 raise HomeAssistantError(
-                    f"SolaxCloud: EVC command error — {actual_msg} (code=10200)"
-                )
-            if code != API_SUCCESS_CODE:
-                msg = data.get("message", "unknown error")
-                _LOGGER.error(
-                    "SolaxCloud: EVC command error — %s (code=%s)", msg, code
-                )
-                raise HomeAssistantError(
-                    f"SolaxCloud command failed: {msg} (code={code})"
+                    translation_domain=DOMAIN,
+                    translation_key="command_rejected",
+                    translation_placeholders={
+                        "action": action,
+                        "code": str(code),
+                        "message": actual_msg,
+                        "hint": status_hint(self.data, self.hass.config.language),
+                    },
                 )
             # Success — break out of retry loop
             break
 
         request_id = data.get("requestId")
         _LOGGER.debug(
-            "SolaxCloud: EVC command accepted — requestId=%s, polling in %ds",
+            "SolaxCloud: EVC command '%s' accepted — requestId=%s, checking result in %ds",
+            action,
             request_id,
             COMMAND_POLL_DELAY,
         )
 
-        # Schedule delivery confirmation poll — non-blocking
+        # Track the delivery result in the background — non-blocking
         if request_id:
-            async def _schedule_poll() -> None:
-                await asyncio.sleep(COMMAND_POLL_DELAY)
-                await self.async_poll_command_result(request_id)
-            self.hass.async_create_task(_schedule_poll())
+            self.hass.async_create_background_task(
+                self._async_track_command(
+                    str(request_id), action, expected, dt_util.utcnow()
+                ),
+                f"{DOMAIN}_command_{request_id}",
+            )
 
         return data
 
-    async def async_poll_command_result(self, request_id: str) -> None:
-        """Poll the command delivery result and notify on failure.
+    async def _async_track_command(
+        self,
+        request_id: str,
+        action: str,
+        expected: dict[str, Any] | None,
+        sent_at: datetime,
+    ) -> None:
+        """Check whether a command took effect and tell the user if it did not.
 
-        Called automatically COMMAND_POLL_DELAY seconds after each control command.
+        1. Poll the cloud's delivery result after COMMAND_POLL_DELAY seconds, and
+           again after COMMAND_POLL_RETRY_DELAYS while it is still "Pending".
+        2. "Success"/"Delivered" → done (and clear an older failure notification).
+        3. "Failed" or no confirmation → if the command has an expected state,
+           refresh the realtime data after COMMAND_VERIFY_DELAY seconds. The cloud
+           has reported "Failed" for commands the EVC did execute, so a matching
+           state only logs a warning.
+        4. Otherwise log an error with all details and create one persistent
+           notification (replacing an older one) explaining what happened.
+        """
+        status: int | None = None
+        result: dict[str, Any] | None = None
+        elapsed = 0
+        for delay in (COMMAND_POLL_DELAY, *COMMAND_POLL_RETRY_DELAYS):
+            await asyncio.sleep(delay)
+            elapsed += delay
+            polled = await self.async_poll_command_result(request_id)
+            if polled is not None:
+                status, result = polled
+            if status in (2, 3, 4):
+                break
+
+        if status in (2, 3):
+            _LOGGER.debug(
+                "SolaxCloud: Command '%s' (%s) %s after %ds",
+                action, request_id, COMMAND_STATUS_MAP[status], elapsed,
+            )
+            persistent_notification.async_dismiss(self.hass, COMMAND_NOTIFICATION_ID)
+            return
+
+        verify: tuple[int, int] | None = None
+        if expected:
+            await asyncio.sleep(COMMAND_VERIFY_DELAY)
+            await self.async_refresh()
+            fresh = self.consecutive_failures == 0 and self.data is not None
+            if fresh and all(self.data.get(k) == v for k, v in expected.items()):
+                _LOGGER.warning(
+                    "SolaxCloud: Command '%s' (%s): cloud reported %s, but the EVC "
+                    "shows the requested state %s — treating it as executed",
+                    action,
+                    request_id,
+                    COMMAND_STATUS_MAP.get(status, "no result"),
+                    expected,
+                )
+                persistent_notification.async_dismiss(self.hass, COMMAND_NOTIFICATION_ID)
+                return
+            if fresh and "deviceWorkingMode" in expected:
+                verify = (
+                    expected["deviceWorkingMode"],
+                    self.data.get("deviceWorkingMode"),
+                )
+
+        _LOGGER.error(
+            "SolaxCloud: Command '%s' did not take effect — requestId=%s sn=%s "
+            "cloud_status=%s cloud_result=%s after %ds; expected=%s evc_state=[%s]",
+            action,
+            request_id,
+            self._evc_sn,
+            status,
+            result,
+            elapsed,
+            expected,
+            describe_evc_state(self.data, "en"),
+        )
+        title, message = build_failure_notification(
+            language=self.hass.config.language,
+            action=action,
+            sent_at=sent_at,
+            status=status,
+            result=result,
+            elapsed=elapsed,
+            evc_data=self.data,
+            verify=verify,
+            verify_skipped=bool(expected) and verify is None,
+            verify_delay=COMMAND_VERIFY_DELAY,
+            request_id=request_id,
+            sn=self._evc_sn,
+        )
+        persistent_notification.async_create(
+            self.hass, message, title=title, notification_id=COMMAND_NOTIFICATION_ID
+        )
+
+    async def async_poll_command_result(
+        self, request_id: str
+    ) -> tuple[int | None, dict[str, Any]] | None:
+        """Fetch the delivery result of a command.
+
         Uses the /openapi/apiRequestLog/listByCondition endpoint.
+        Returns (status, device_result) for this EVC, or None if the poll failed.
 
         Status codes (Appendix 8):
-          1 = Pending   — device not yet reached (log debug, no notification)
+          1 = Pending   — device not yet reached
           2 = Success   — command executed successfully
           3 = Delivered — delivered to device
-          4 = Failed    — device rejected the command (persistent notification)
+          4 = Failed    — reported as failed (not always reliable, see _async_track_command)
 
         NOTE: This endpoint returns code=10000 (same as data/control endpoints).
         Official docs state code=0 — this is incorrect, verified by live testing.
@@ -629,56 +773,34 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 data = await resp.json()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning(
-                "SolaxCloud: Command poll failed for requestId=%s: %s", request_id, err
+                "SolaxCloud: Command result poll failed for requestId=%s: %s",
+                request_id, str(err) or type(err).__name__,
             )
-            return
+            return None
 
         if data.get("code") != API_SUCCESS_CODE:
             _LOGGER.warning(
-                "SolaxCloud: Poll endpoint error — code=%s message=%s",
+                "SolaxCloud: Command result poll error for requestId=%s — code=%s message=%s",
+                request_id,
                 data.get("code"),
                 data.get("message"),
             )
-            return
+            return None
 
         results: list[dict] = data.get("result") or []
-        for device_result in results:
-            sn = device_result.get("sn", "unknown")
-            status = device_result.get("status")
-            status_name = COMMAND_STATUS_MAP.get(status, f"Unknown({status})")
-
-            if status in (2, 3):  # Success or Delivered
-                _LOGGER.debug(
-                    "SolaxCloud: Command %s — device %s: %s",
-                    request_id,
-                    sn,
-                    status_name,
-                )
-            elif status == 1:  # Still pending after COMMAND_POLL_DELAY
-                _LOGGER.debug(
-                    "SolaxCloud: Command %s still pending for device %s after %ds",
-                    request_id,
-                    sn,
-                    COMMAND_POLL_DELAY,
-                )
-            elif status == 4:  # Failed
-                _LOGGER.error(
-                    "SolaxCloud: Command %s FAILED for device %s",
-                    request_id,
-                    sn,
-                )
-                self.hass.async_create_task(
-                    self.hass.services.async_call(
-                        "persistent_notification",
-                        "create",
-                        {
-                            "title": "SolaxCloud: Command Failed",
-                            "message": (
-                                f"A command to device **{sn}** could not be delivered.\n\n"
-                                f"Request ID: `{request_id}`\n"
-                                "Please check the device status in the SolaxCloud app."
-                            ),
-                            "notification_id": f"solax_cmd_failed_{request_id}",
-                        },
-                    )
-                )
+        device_result = next(
+            (r for r in results if r.get("sn") == self._evc_sn),
+            results[0] if results else None,
+        )
+        if device_result is None:
+            _LOGGER.debug("SolaxCloud: Command %s — empty result list", request_id)
+            return None
+        status = device_result.get("status")
+        _LOGGER.debug(
+            "SolaxCloud: Command %s — device %s: %s (%s)",
+            request_id,
+            device_result.get("sn", "unknown"),
+            COMMAND_STATUS_MAP.get(status, f"Unknown({status})"),
+            device_result,
+        )
+        return status, device_result
