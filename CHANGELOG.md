@@ -6,9 +6,11 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ### Changed
 - **Per-entity staleness** — after a failed poll, live values (Charging Power, Current L1–L3, Session Duration) stay available for 15 minutes only, so a frozen power value is never shown for long; energy counters, status, mode and selects are bridged for up to 2 hours (`STALE_TOLERANCE_SHORT` / `STALE_TOLERANCE_LONG`, replaces the single 30-minute `STALE_TOLERANCE`)
+- HTTP requests use an integration-owned aiohttp session (needed for the DNS fallback resolver) instead of Home Assistant's shared session; it is closed on unload and shutdown
 
 ### Added
-- Test suite based on `pytest-homeassistant-custom-component` (`tests/`, `requirements_test.txt`) covering setup, retries, bridging, per-entity staleness, the energy counter guard, error classification and diagnostics
+- **DNS fallback** — when `openapi-eu.solaxcloud.com` cannot be resolved (e.g. "DNS server returned answer with no data"), requests go to the last successfully resolved IP addresses instead of failing. TLS SNI, certificate check and `Host` header still use the hostname. Logged once per outage as a warning, recovery as info (`dns_fallback.py`)
+- Test suite based on `pytest-homeassistant-custom-component` (`tests/`, `requirements_test.txt`) covering setup, retries, bridging, per-entity staleness, the energy counter guard, error classification, diagnostics and the DNS fallback (simulated DNS outage against a local TLS server)
 - GitHub workflow `Tests` running the suite on push and pull requests
 
 ## [1.2.0] — 2026-10-14
