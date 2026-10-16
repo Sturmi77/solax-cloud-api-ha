@@ -4,6 +4,13 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **EVC Charging Current had no effect** — the number entity sent the field `currentGear`, the API expects `current` (as the work-mode select already did)
+- **EVC Charging Current never showed a value** — it read `currentGear` from the realtime data, which the API does not report. It now shows the value last set from HA for the active mode (defaults ECO 16 A, Green 6 A), kept across restarts; changes made in the SolaxCloud app are not visible
+
+### Changed
+- Switching the work mode to ECO or Green sends the current last set for that mode instead of always 16 A / 6 A
+
 ## [1.4.0] — 2026-10-16
 
 ### Fixed

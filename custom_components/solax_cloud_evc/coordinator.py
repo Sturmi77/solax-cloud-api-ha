@@ -47,6 +47,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -67,6 +68,7 @@ from .const import (
     CONF_CLIENT_SECRET,
     CONF_EVC_SN,
     CONF_TOKEN_EXPIRES,
+    CURRENT_GEAR_STORAGE_VERSION,
     DATA_RETRY_DELAYS,
     DATA_URL,
     DEFAULT_SCAN_INTERVAL,
@@ -74,6 +76,8 @@ from .const import (
     BUSINESS_TYPE_RESIDENTIAL,
     DEVICE_TYPE_EVC,
     DOMAIN,
+    EVC_CURRENT_GEAR_OPTIONS,
+    EVC_DEFAULT_CURRENT_GEAR,
     REQUEST_TIMEOUT,
     STALE_TOLERANCE_LONG,
     TOKEN_REFRESH_BUFFER,
@@ -84,6 +88,11 @@ from .command_feedback import build_failure_notification, describe_evc_state, st
 from .dns_fallback import async_create_fallback_session
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def current_gear_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, int]]:
+    """Storage for the charging current per mode (see SolaxCoordinator.current_gears)."""
+    return Store(hass, CURRENT_GEAR_STORAGE_VERSION, f"{DOMAIN}.{entry_id}.current_gear")
 
 
 class _TransientPollError(UpdateFailed):
@@ -151,6 +160,27 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self.last_error: str | None = None
         self.last_error_time: datetime | None = None
         self.last_success_time: datetime | None = None
+        # Charging current per mode as last set from HA. The realtime data does not
+        # report it, so it is remembered here and persisted across restarts.
+        self.current_gears: dict[str, int] = dict(EVC_DEFAULT_CURRENT_GEAR)
+        self._gear_store = current_gear_store(hass, entry.entry_id)
+
+    # ── Charging current (not reported by the API) ───────────────────────────
+
+    async def async_load_current_gears(self) -> None:
+        """Restore the charging current per mode saved by a previous run."""
+        stored = await self._gear_store.async_load()
+        if not isinstance(stored, dict):
+            return
+        for mode, gear in stored.items():
+            if gear in (EVC_CURRENT_GEAR_OPTIONS.get(mode) or ()):
+                self.current_gears[mode] = gear
+
+    async def async_set_current_gear(self, mode: str, gear: int) -> None:
+        """Remember the charging current sent for a mode and update the entities."""
+        self.current_gears[mode] = gear
+        await self._gear_store.async_save(self.current_gears)
+        self.async_update_listeners()
 
     # ── Token Management ─────────────────────────────────────────────────────
 

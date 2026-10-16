@@ -33,7 +33,6 @@ from .const import (
     EVC_CONTROL_SCENE_URL,
     EVC_CONTROL_START_MODE_URL,
     EVC_CONTROL_WORK_MODE_URL,
-    EVC_DEFAULT_CURRENT_GEAR,
     EVC_START_MODE_TO_INT,
     EVC_WORK_MODE_TO_INT,
     EVC_WORKING_MODE_MAP,
@@ -112,8 +111,8 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Send work mode command to SolaxCloud API.
 
-        For ECO and Green modes, sends the default "current" value automatically.
-        The user can fine-tune the current afterwards using the number entity.
+        For ECO and Green modes, sends the "current" last set for that mode
+        (default 16 A / 6 A); the number entity changes it.
         """
         work_mode_int = EVC_WORK_MODE_TO_INT.get(option)
         if work_mode_int is None:
@@ -125,23 +124,24 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
             "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
-        # ECO and Green require a "current" field — send the default
+        # ECO and Green require a "current" field — send the current last set for
+        # this mode (default until the user changes it via the number entity)
         # NOTE: API field is "current" (not "currentGear") per Developer Portal docs
-        default_gear = EVC_DEFAULT_CURRENT_GEAR.get(option)
-        if default_gear is not None:
-            payload["current"] = default_gear
+        gear = self.coordinator.current_gears.get(option)
+        if gear is not None:
+            payload["current"] = gear
 
         _LOGGER.info(
             "SolaxCloud: Setting EVC work mode → %s (workMode=%s%s)",
             option,
             work_mode_int,
-            f", current={default_gear}" if default_gear else "",
+            f", current={gear}" if gear else "",
         )
 
         await self.coordinator.async_send_evc_command(
             EVC_CONTROL_WORK_MODE_URL,
             payload,
-            action=f"Work Mode → {option}" + (f" ({default_gear} A)" if default_gear else ""),
+            action=f"Work Mode → {option}" + (f" ({gear} A)" if gear else ""),
             expected={"deviceWorkingMode": work_mode_int},
         )
 
