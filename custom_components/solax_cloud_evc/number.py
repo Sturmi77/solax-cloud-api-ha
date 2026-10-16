@@ -3,15 +3,22 @@
 Allows the user to set the charging current (Ampere) for ECO and Green modes.
 The entity is unavailable when work mode is Stop or Fast (no current setting needed).
 
-Valid currentGear values per mode (from API docs):
+Valid "current" values per mode (from API docs):
   ECO:   6, 10, 16, 20, 25 A
   Green: 3, 6 A
 
 The number entity uses the min/max of the valid range for the current mode.
 The user picks any value in that range; we snap it to the nearest valid gear.
 
+The realtime data does not report the charging current. The entity shows the value
+last set from HA for the active mode (coordinator.current_gears, persisted across
+restarts; defaults 16 A for ECO, 6 A for Green). A change made in the SolaxCloud app
+is not visible here.
+
 API: POST /openapi/v2/device/evc_control/set_evc_work_mode
-     {"snList": ["<sn>"], "workMode": <int>, "currentGear": <int>, "businessType": 1}
+     {"snList": ["<sn>"], "workMode": <int>, "current": <int>, "businessType": 1}
+     The field is "current" — releases up to 1.4.0 sent "currentGear", which the API
+     does not know.
 
 See ARCHITECTURE.md §8 for design rationale.
 """
@@ -62,7 +69,7 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
     """Number entity to set EVC charging current.
 
     Only available when deviceWorkingMode is ECO or Green.
-    Snaps user input to the nearest valid currentGear for the current mode.
+    Snaps user input to the nearest valid current for the active mode.
     """
 
     _attr_has_entity_name = True
@@ -83,7 +90,6 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
         self._evc_sn = evc_sn
         self._attr_unique_id = f"{entry.entry_id}_evc_charging_current"
         self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
-        self._optimistic_value: float | None = None  # set locally after command for immediate UI feedback
 
     def _current_mode_name(self) -> str | None:
         """Return current work mode name (Stop/Fast/ECO/Green) or None."""
@@ -93,7 +99,7 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
         return EVC_WORKING_MODE_MAP.get(raw)
 
     def _valid_gears(self) -> list[int] | None:
-        """Return valid currentGear values for the current mode, or None."""
+        """Return valid current values for the active mode, or None."""
         mode = self._current_mode_name()
         if mode is None:
             return None
@@ -120,16 +126,9 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
 
     @property
     def native_value(self) -> float | None:
-        """Return current charging current.
-
-        Returns the optimistic (locally cached) value immediately after a command,
-        falling back to coordinator data on the next poll.
-        """
-        if self._optimistic_value is not None:
-            return self._optimistic_value
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get("currentGear")
+        """Return the charging current last set from HA for the active mode."""
+        gear = self.coordinator.current_gears.get(self._current_mode_name() or "")
+        return float(gear) if gear is not None else None
 
     async def async_set_native_value(self, value: float) -> None:
         """Send charging current command — snaps to nearest valid gear."""
@@ -152,7 +151,7 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
         payload = {
             "snList": [self._evc_sn],
             "workMode": work_mode_int,
-            "currentGear": target_gear,
+            "current": target_gear,  # NOT "currentGear" — see module docstring
             "businessType": BUSINESS_TYPE_RESIDENTIAL,
         }
 
@@ -170,11 +169,5 @@ class EvcChargingCurrentNumber(CoordinatorEntity[SolaxCoordinator], NumberEntity
             action=f"Charging Current → {target_gear} A ({mode_name})",
         )
 
-        # Optimistic update — show new value immediately without waiting for next poll
-        self._optimistic_value = float(target_gear)
-        self.async_write_ha_state()
-
-    def _handle_coordinator_update(self) -> None:
-        """Reset optimistic state on coordinator update so real API value takes over."""
-        self._optimistic_value = None
-        super()._handle_coordinator_update()
+        # Remember (and persist) the value — also used when switching into this mode
+        await self.coordinator.async_set_current_gear(mode_name, target_gear)

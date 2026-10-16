@@ -13,7 +13,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .coordinator import SolaxCoordinator
+from .coordinator import SolaxCoordinator, current_gear_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ PLATFORMS = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SolaxCloud API from a config entry."""
     coordinator = SolaxCoordinator(hass, entry)
+    await coordinator.async_load_current_gears()
 
     # Perform first refresh — raises ConfigEntryNotReady on failure so HA retries
     await coordinator.async_config_entry_first_refresh()
@@ -45,3 +46,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the stored charging currents when the integration is removed."""
+    await current_gear_store(hass, entry.entry_id).async_remove()

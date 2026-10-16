@@ -292,6 +292,13 @@ class SolaxCoordinator(DataUpdateCoordinator):
 - Only required for ECO (`workMode=2`) and Green (`workMode=3`)
 - Not sent for Stop or Fast
 - Valid values: ECO → `[6, 10, 16, 20, 25]` A; Green → `[3, 6]` A
+- The realtime data does **not** report the current. The integration remembers the
+  value last set from HA per mode (`coordinator.current_gears`, defaults ECO 16 A /
+  Green 6 A, persisted in `.storage/solax_cloud_evc.<entry_id>.current_gear`). The
+  number entity shows it, switching the work mode into ECO/Green sends it. Changes
+  made in the SolaxCloud app are not visible.
+- Releases up to 1.4.0 sent `"currentGear"` from the number entity — not the
+  documented field, so the current setting was most likely ignored.
 
 ### Command Delivery Architecture
 

@@ -166,6 +166,10 @@ EVC_DEFAULT_CURRENT_GEAR: dict[str, int] = {
     "Green": 6,
 }
 
+# The realtime data does not report the charging current — the value last set from
+# HA is kept per mode in .storage/solax_cloud_evc.<entry_id>.current_gear
+CURRENT_GEAR_STORAGE_VERSION = 1
+
 
 def _evc_device_info(domain: str, evc_sn: str) -> DeviceInfo:
     """Return shared DeviceInfo for the EVC entity."""
