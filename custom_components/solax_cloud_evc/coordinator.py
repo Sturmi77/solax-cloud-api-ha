@@ -23,7 +23,9 @@ Key design decisions:
   unavailable. Each entity decides via data_age() how long it shows bridged data
   (live values such as power only for STALE_TOLERANCE_SHORT). Poll health (consecutive failures, last error) is exposed for
   diagnostics and a dedicated sensor.
-- All HTTP calls share HA's aiohttp session with an explicit REQUEST_TIMEOUT.
+- All HTTP calls share one aiohttp session with an explicit REQUEST_TIMEOUT. The session
+  belongs to the integration because its resolver falls back to the last known IPs
+  when DNS for the API host fails (dns_fallback.py).
 - totalChargeEnergy is guarded against 0/None/decreasing values so a glitch never
   looks like a meter reset to the TOTAL_INCREASING statistics.
 
@@ -43,7 +45,6 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -75,6 +76,7 @@ from .const import (
     TOKEN_URL,
     TRANSIENT_API_CODES,
 )
+from .dns_fallback import async_create_fallback_session
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -132,7 +134,8 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._token_expires: float = 0.0
         self._last_command_time: float = 0.0
         self._postpone_poll_until: float = 0.0   # skip polls until this monotonic timestamp
-        self._session = async_get_clientsession(hass)
+        # Own session with DNS fallback (see dns_fallback.py)
+        self._session = async_create_fallback_session(hass, entry)
         self._timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
         # Raw (unfiltered) API response — stored for diagnostics export
         self.raw_api_response: dict | None = None

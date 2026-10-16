@@ -197,6 +197,10 @@ time after the last successful poll:
 `last_error`, `last_error_time` and `last_success_time`. Rate limits (`10406`) are not
 retried and recover on the next poll cycle.
 
+If DNS for `openapi-eu.solaxcloud.com` fails, the integration keeps using the last
+successfully resolved IP addresses (warning in the log: *DNS lookup … failed — using last
+known address(es)*). This only works once a lookup has succeeded since the last HA start.
+
 ### Energy Dashboard shows wrong daily values
 
 **Symptom:** Energy Dashboard shows unexpectedly high or low values after adding

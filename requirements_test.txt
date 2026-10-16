@@ -1,2 +1,4 @@
 # Pulls in a matching homeassistant core version, pytest and the HA test fixtures
 pytest-homeassistant-custom-component
+# Self-signed TLS certificates for the DNS fallback test
+trustme

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -50,6 +51,24 @@ def realtime(**overrides: Any) -> dict[str, Any]:
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Load the integration from custom_components/."""
     return
+
+
+@pytest.fixture(autouse=True)
+async def mock_fallback_session(hass, aioclient_mock):
+    """Route the integration's own DNS-fallback session through aioclient_mock."""
+    sessions = []
+
+    def create_session(hass, entry):
+        sessions.append(aioclient_mock.create_session(hass.loop))
+        return sessions[-1]
+
+    with patch(
+        "custom_components.solax_cloud_evc.coordinator.async_create_fallback_session",
+        side_effect=create_session,
+    ):
+        yield
+    for session in sessions:
+        await session.close()
 
 
 @pytest.fixture
