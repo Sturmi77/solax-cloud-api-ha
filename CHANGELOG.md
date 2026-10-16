@@ -4,6 +4,8 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-16
+
 ### Fixed
 - **EVC Charging Status showed wrong states** — the `deviceStatus` mapping was shifted by one: an active charging session was shown as "Complete" and a finished session (vehicle full) as "Fault". The sensor now uses the OCPP-style states of the EVC (Available, Preparing, Charging, Finishing, Faulted, Unavailable, Suspended EV, Suspended EVSE, Update, …). **Breaking for automations** that compare against the old texts "Waiting", "Complete", "Fault" or "Stop"
 - **False "Command Failed" notifications** — the SolaX Cloud sometimes reports a command as failed although the charger executed it. Work-mode commands are now cross-checked against fresh realtime data before anything is reported; a pending result is polled up to three times (after 5, 15 and 35 s)
