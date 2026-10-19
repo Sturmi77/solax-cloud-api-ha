@@ -4,6 +4,8 @@ All notable changes are documented here. Follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-10-19
+
 ### Fixed
 - **False "command rejected" notifications for work-mode changes** — the cross-check ran 20 s after the command, but the charger uploads data only about every 5 minutes, so it still saw the old mode. It now waits (up to 12 minutes, refreshing every minute) for data measured at least 90 s after the command; a notification is only created if that data shows another mode, or says explicitly that no new data arrived
 - **Work Mode select jumped back** to the old mode a few seconds after a change (a skipped poll or an old upload reset it); it now keeps the selected mode until the charger data shows it or was measured after the command
