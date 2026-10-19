@@ -35,8 +35,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "evc_state_line": "Status {status}, Modus {mode}, Leistung {power} W (Daten von {time})",
         "evc_state_missing": "keine aktuellen Daten",
         "verify": "Gegenprüfung",
-        "verify_line": "Modus nach {seconds} s weiterhin {actual} (angefordert: {expected})",
-        "verify_skipped": "nicht möglich, Datenabruf fehlgeschlagen",
+        "verify_line": "Wallbox-Daten von {time} zeigen weiterhin Modus {actual} (angefordert: {expected})",
+        "verify_skipped": "innerhalb von {minutes} min keine neuen Wallbox-Daten – ob der Befehl wirkt, zeigt der nächste Datenstand",
         "hint": "Mögliche Ursache",
         "details": "Request-ID `{request_id}` · Gerät `{sn}`",
         "hint_0": "Kein Fahrzeug angesteckt – die Wallbox nimmt Ladebefehle in der Regel erst mit angestecktem Fahrzeug an.",
@@ -61,8 +61,8 @@ _TEXT: dict[str, dict[str, str]] = {
         "evc_state_line": "status {status}, mode {mode}, power {power} W (data from {time})",
         "evc_state_missing": "no current data",
         "verify": "Cross-check",
-        "verify_line": "mode still {actual} after {seconds} s (requested: {expected})",
-        "verify_skipped": "not possible, data poll failed",
+        "verify_line": "charger data from {time} still shows mode {actual} (requested: {expected})",
+        "verify_skipped": "no new charger data within {minutes} min – the next data update shows whether the command took effect",
         "hint": "Likely cause",
         "details": "Request ID `{request_id}` · device `{sn}`",
         "hint_0": "No vehicle connected – the charger usually accepts charging commands only with a vehicle plugged in.",
@@ -153,14 +153,14 @@ def build_failure_notification(
     evc_data: dict[str, Any] | None,
     verify: tuple[int, int] | None,
     verify_skipped: bool,
-    verify_delay: int,
+    verify_timeout_min: int,
     request_id: str,
     sn: str,
 ) -> tuple[str, str]:
     """Return (title, message) for a command that did not take effect.
 
     verify is (expected, actual) work mode when a cross-check against fresh data
-    ran; verify_skipped is True when a cross-check was due but the data poll failed.
+    ran; verify_skipped is True when a cross-check was due but no new data arrived.
     """
     text = _texts(language)
     title = text["title_failed"] if status == 4 else text["title_unconfirmed"]
@@ -175,13 +175,16 @@ def build_failure_notification(
         lines.append(
             f"**{text['verify']}:** "
             + text["verify_line"].format(
-                seconds=verify_delay,
+                time=_local_time((evc_data or {}).get("dataTime")),
                 actual=EVC_WORKING_MODE_MAP.get(actual, f"Unknown ({actual})"),
                 expected=EVC_WORKING_MODE_MAP.get(expected, f"Unknown ({expected})"),
             )
         )
     elif verify_skipped:
-        lines.append(f"**{text['verify']}:** {text['verify_skipped']}")
+        lines.append(
+            f"**{text['verify']}:** "
+            + text["verify_skipped"].format(minutes=verify_timeout_min)
+        )
     lines.append(f"**{text['hint']}:** {status_hint(evc_data, language)}")
     lines.append("")
     lines.append(text["details"].format(request_id=request_id, sn=sn))

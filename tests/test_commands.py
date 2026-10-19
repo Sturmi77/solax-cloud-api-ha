@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 from custom_components.solax_cloud_evc.const import (
     COMMAND_NOTIFICATION_ID,
@@ -27,6 +29,11 @@ _real_sleep = asyncio.sleep
 async def _yield(*_args):
     """Stand-in for the delays: yield once instead of waiting."""
     await _real_sleep(0)
+
+
+def _measured_in(minutes: float) -> str:
+    """dataTime of an EVC measurement `minutes` from now (ISO, UTC)."""
+    return (dt_util.utcnow() + timedelta(minutes=minutes)).isoformat()
 
 
 STATUS = "sensor.solaxcloud_ev_charger_evc_charging_status"
@@ -88,7 +95,10 @@ async def test_failed_notification_explains(hass, aioclient_mock, setup_integrat
     hass.config.language = "de"
     coordinator = _coordinator(hass, setup_integration)
     poll = AsyncMock(return_value=(4, {"sn": EVC_SN, "status": 4, "remark": "busy"}))
-    finished = realtime(deviceStatus=3, deviceWorkingMode=0, chargingPower=0)
+    # Measured 3 min after the command — late enough to count as evidence
+    finished = realtime(
+        deviceStatus=3, deviceWorkingMode=0, chargingPower=0, dataTime=_measured_in(3)
+    )
     with (
         patch.object(coordinator, "async_poll_command_result", poll),
         patch(SLEEP, AsyncMock(side_effect=_yield)),
@@ -104,7 +114,7 @@ async def test_failed_notification_explains(hass, aioclient_mock, setup_integrat
     assert "Work Mode → ECO (16 A)" in message
     assert "Failed (status 4, nach 5 s) – remark=busy" in message
     assert "Status Finishing, Modus Stop, Leistung 0 W" in message
-    assert "weiterhin Stop (angefordert: ECO)" in message
+    assert "zeigen weiterhin Modus Stop (angefordert: ECO)" in message
     assert "Ladevorgang ist bereits beendet" in message
     assert "req-1" in message and EVC_SN in message
     assert "did not take effect" in caplog.text
@@ -126,6 +136,91 @@ async def test_pending_then_success(hass, aioclient_mock, setup_integration):
     assert poll.await_count == 3
     notify.async_create.assert_not_called()
     notify.async_dismiss.assert_called_once_with(hass, COMMAND_NOTIFICATION_ID)
+
+
+async def test_late_effect_is_awaited(hass, setup_integration):
+    """Old data does not count: the tracker waits until the EVC data shows ECO."""
+    coordinator = _coordinator(hass, setup_integration)
+    poll = AsyncMock(return_value=(4, {"sn": EVC_SN, "status": 4}))
+    old = realtime(deviceWorkingMode=3)["result"][0]            # measured before the command
+    later = realtime(deviceWorkingMode=2, dataTime=_measured_in(4))["result"][0]
+    fetch = AsyncMock(side_effect=[old, old, old, later])
+    with (
+        patch.object(coordinator, "async_poll_command_result", poll),
+        patch.object(coordinator, "_fetch_realtime", fetch),
+        patch(SLEEP, AsyncMock(side_effect=_yield)),
+        patch(NOTIFY) as notify,
+    ):
+        await coordinator._async_track_command(
+            "req-4", "Work Mode → ECO (16 A)", {"deviceWorkingMode": 2}, dt_util.utcnow()
+        )
+
+    assert fetch.await_count == 4
+    notify.async_create.assert_not_called()
+
+
+async def test_no_new_data_reports_unverified(hass, setup_integration):
+    """Without data measured after the command the notification says so."""
+    hass.config.language = "de"
+    coordinator = _coordinator(hass, setup_integration)
+    poll = AsyncMock(return_value=(4, {"sn": EVC_SN, "status": 4}))
+    fetch = AsyncMock(return_value=realtime(deviceWorkingMode=3)["result"][0])
+    with (
+        patch.object(coordinator, "async_poll_command_result", poll),
+        patch.object(coordinator, "_fetch_realtime", fetch),
+        patch(SLEEP, AsyncMock(side_effect=_yield)),
+        patch(NOTIFY) as notify,
+    ):
+        await coordinator._async_track_command(
+            "req-5", "Work Mode → ECO (16 A)", {"deviceWorkingMode": 2}, dt_util.utcnow()
+        )
+
+    assert fetch.await_count == 12  # one refresh per minute for 12 minutes
+    message = notify.async_create.call_args[0][1]
+    assert "innerhalb von 12 min keine neuen Wallbox-Daten" in message
+
+
+async def test_superseded_command_stays_silent(hass, setup_integration):
+    """A newer command ends the tracking of an older one without a notification."""
+    coordinator = _coordinator(hass, setup_integration)
+    coordinator._command_seq = 2
+    poll = AsyncMock(return_value=(4, {"sn": EVC_SN, "status": 4}))
+    with (
+        patch.object(coordinator, "async_poll_command_result", poll),
+        patch(SLEEP, AsyncMock(side_effect=_yield)),
+        patch(NOTIFY) as notify,
+    ):
+        await coordinator._async_track_command(
+            "req-6", "Work Mode → ECO (16 A)", {"deviceWorkingMode": 2}, dt_util.utcnow(), 1
+        )
+
+    notify.async_create.assert_not_called()
+
+
+async def test_select_keeps_choice_until_data_settles(hass, aioclient_mock, setup_integration):
+    """Updates with data measured before the command do not flip the select back."""
+    coordinator = _coordinator(hass, setup_integration)
+    aioclient_mock.post(EVC_CONTROL_WORK_MODE_URL, json={"code": 10000, "requestId": "r"})
+    with patch(
+        "custom_components.solax_cloud_evc.coordinator.SolaxCoordinator._async_track_command",
+        AsyncMock(),
+    ):
+        await hass.services.async_call(
+            "select", "select_option", {"entity_id": WORK_MODE, "option": "ECO"}, blocking=True
+        )
+    assert hass.states.get(WORK_MODE).state == "ECO"
+
+    # Cached/old data (Green, measured before the command): keep ECO
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get(WORK_MODE).state == "ECO"
+
+    # Data measured well after the command still says Green: show the real mode
+    coordinator.async_set_updated_data(
+        realtime(deviceWorkingMode=3, dataTime=_measured_in(3))["result"][0]
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(WORK_MODE).state == "Green"
 
 
 async def test_unconfirmed_without_expected_state(hass, setup_integration):

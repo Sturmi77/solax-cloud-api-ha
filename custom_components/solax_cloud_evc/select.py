@@ -17,6 +17,7 @@ See ARCHITECTURE.md §8 for design rationale.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
@@ -24,6 +25,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import (
     BUSINESS_TYPE_RESIDENTIAL,
@@ -86,6 +88,7 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
         self._attr_unique_id = f"{entry.entry_id}_evc_work_mode_select"
         self._attr_device_info = _evc_device_info(DOMAIN, evc_sn)
         self._attr_current_option: str | None = None  # optimistic: set locally after command
+        self._optimistic_sent_at: datetime | None = None
 
     @property
     def current_option(self) -> str | None:
@@ -147,11 +150,25 @@ class EvcWorkModeSelect(CoordinatorEntity[SolaxCoordinator], SelectEntity):
 
         # Optimistic update — show new state immediately without waiting for next poll
         self._attr_current_option = option
+        self._optimistic_sent_at = dt_util.utcnow()
         self.async_write_ha_state()
 
     def _handle_coordinator_update(self) -> None:
-        """Reset optimistic state on coordinator update so real API value takes over."""
-        self._attr_current_option = None
+        """Let the real API value take over once the data can reflect the command.
+
+        The EVC uploads data only every ~5 minutes, so an update right after a
+        command (or a skipped poll returning cached data) still shows the old mode.
+        Keep the selected mode until the data shows it or was measured
+        COMMAND_SETTLE_TIME after the command.
+        """
+        if self._attr_current_option is not None and (
+            self.coordinator.data is None
+            or EVC_WORKING_MODE_MAP.get(self.coordinator.data.get("deviceWorkingMode"))
+            == self._attr_current_option
+            or self._optimistic_sent_at is None
+            or self.coordinator.evc_data_settled(self._optimistic_sent_at)
+        ):
+            self._attr_current_option = None
         super()._handle_coordinator_update()
 
 
