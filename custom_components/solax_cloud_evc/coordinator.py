@@ -62,7 +62,9 @@ from .const import (
     COMMAND_POLL_RETRY_DELAYS,
     COMMAND_POLL_URL,
     COMMAND_STATUS_MAP,
-    COMMAND_VERIFY_DELAY,
+    COMMAND_SETTLE_TIME,
+    COMMAND_VERIFY_INTERVAL,
+    COMMAND_VERIFY_TIMEOUT,
     CONF_ACCESS_TOKEN,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -149,6 +151,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         self._token_expires: float = 0.0
         self._last_command_time: float = 0.0
         self._postpone_poll_until: float = 0.0   # skip polls until this monotonic timestamp
+        self._command_seq: int = 0               # newest command; older trackers stop
         # Own session with DNS fallback (see dns_fallback.py)
         self._session = async_create_fallback_session(hass, entry)
         self._timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
@@ -353,6 +356,19 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         if self.last_success_time is None:
             return None
         return (dt_util.utcnow() - self.last_success_time).total_seconds()
+
+    def data_time(self) -> datetime | None:
+        """Time of the EVC measurement in the current data (dataTime), or None."""
+        raw = (self.data or {}).get("dataTime")
+        return dt_util.parse_datetime(raw) if isinstance(raw, str) else None
+
+    def evc_data_settled(self, sent_at: datetime) -> bool:
+        """True when the current EVC data was measured long enough after sent_at
+        to show the effect of a command sent then (COMMAND_SETTLE_TIME)."""
+        measured = self.data_time()
+        return measured is not None and measured >= sent_at + timedelta(
+            seconds=COMMAND_SETTLE_TIME
+        )
 
     def _can_bridge_failure(self) -> bool:
         """Return True while the last good data is recent enough to keep serving."""
@@ -671,11 +687,13 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             COMMAND_POLL_DELAY,
         )
 
-        # Track the delivery result in the background — non-blocking
+        # Track the delivery result in the background — non-blocking. A newer
+        # command supersedes the tracking of this one.
+        self._command_seq += 1
         if request_id:
             self.hass.async_create_background_task(
                 self._async_track_command(
-                    str(request_id), action, expected, dt_util.utcnow()
+                    str(request_id), action, expected, dt_util.utcnow(), self._command_seq
                 ),
                 f"{DOMAIN}_command_{request_id}",
             )
@@ -688,6 +706,7 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
         action: str,
         expected: dict[str, Any] | None,
         sent_at: datetime,
+        seq: int = 0,
     ) -> None:
         """Check whether a command took effect and tell the user if it did not.
 
@@ -695,11 +714,12 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
            again after COMMAND_POLL_RETRY_DELAYS while it is still "Pending".
         2. "Success"/"Delivered" → done (and clear an older failure notification).
         3. "Failed" or no confirmation → if the command has an expected state,
-           refresh the realtime data after COMMAND_VERIFY_DELAY seconds. The cloud
-           has reported "Failed" for commands the EVC did execute, so a matching
-           state only logs a warning.
+           watch the realtime data (_async_wait_for_evc_state). The cloud reports
+           "Failed" for commands the EVC does execute, so a matching state only
+           logs a warning.
         4. Otherwise log an error with all details and create one persistent
            notification (replacing an older one) explaining what happened.
+        A newer command (seq) ends this tracking silently.
         """
         status: int | None = None
         result: dict[str, Any] | None = None
@@ -723,10 +743,14 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
 
         verify: tuple[int, int] | None = None
         if expected:
-            await asyncio.sleep(COMMAND_VERIFY_DELAY)
-            await self.async_refresh()
-            fresh = self.consecutive_failures == 0 and self.data is not None
-            if fresh and all(self.data.get(k) == v for k, v in expected.items()):
+            outcome = await self._async_wait_for_evc_state(seq, sent_at, expected)
+            if outcome is None:
+                _LOGGER.debug(
+                    "SolaxCloud: Command '%s' (%s) superseded by a newer command",
+                    action, request_id,
+                )
+                return
+            if outcome == "matched":
                 _LOGGER.warning(
                     "SolaxCloud: Command '%s' (%s): cloud reported %s, but the EVC "
                     "shows the requested state %s — treating it as executed",
@@ -737,11 +761,13 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
                 )
                 persistent_notification.async_dismiss(self.hass, COMMAND_NOTIFICATION_ID)
                 return
-            if fresh and "deviceWorkingMode" in expected:
+            if outcome == "mismatch" and "deviceWorkingMode" in expected:
                 verify = (
                     expected["deviceWorkingMode"],
                     self.data.get("deviceWorkingMode"),
                 )
+        if seq and seq != self._command_seq:
+            return
 
         _LOGGER.error(
             "SolaxCloud: Command '%s' did not take effect — requestId=%s sn=%s "
@@ -765,13 +791,39 @@ class SolaxCoordinator(DataUpdateCoordinator[dict]):
             evc_data=self.data,
             verify=verify,
             verify_skipped=bool(expected) and verify is None,
-            verify_delay=COMMAND_VERIFY_DELAY,
+            verify_timeout_min=COMMAND_VERIFY_TIMEOUT // 60,
             request_id=request_id,
             sn=self._evc_sn,
         )
         persistent_notification.async_create(
             self.hass, message, title=title, notification_id=COMMAND_NOTIFICATION_ID
         )
+
+    async def _async_wait_for_evc_state(
+        self, seq: int, sent_at: datetime, expected: dict[str, Any]
+    ) -> str | None:
+        """Watch the realtime data for the effect of a command.
+
+        Returns "matched" as soon as the data shows the expected state, "mismatch"
+        when data measured COMMAND_SETTLE_TIME after sending still shows another
+        state, "no_data" when no such data arrived within COMMAND_VERIFY_TIMEOUT,
+        and None when a newer command superseded this one.
+        """
+        for check in range(COMMAND_VERIFY_TIMEOUT // COMMAND_VERIFY_INTERVAL + 1):
+            if seq and seq != self._command_seq:
+                return None
+            if self.consecutive_failures == 0 and self.data is not None:
+                if all(self.data.get(k) == v for k, v in expected.items()):
+                    return "matched"
+                if self.evc_data_settled(sent_at):
+                    return "mismatch"
+            if check == COMMAND_VERIFY_TIMEOUT // COMMAND_VERIFY_INTERVAL:
+                break
+            await asyncio.sleep(COMMAND_VERIFY_INTERVAL)
+            if seq and seq != self._command_seq:
+                return None
+            await self.async_refresh()
+        return "no_data"
 
     async def async_poll_command_result(
         self, request_id: str

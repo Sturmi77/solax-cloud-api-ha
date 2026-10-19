@@ -109,9 +109,14 @@ COMMAND_POLL_DELAY = 5            # seconds to wait before the first result poll
 # "Pending" — the first "Failed" after 5 s turned out to be unreliable (2026-10-16:
 # reported Failed although the EVC switched to ECO and started charging).
 COMMAND_POLL_RETRY_DELAYS = (10, 20)
-# After a negative or missing confirmation: wait this long, refresh the realtime
-# data and check whether the EVC adopted the requested state anyway.
-COMMAND_VERIFY_DELAY = 20
+# After a negative or missing confirmation: check the realtime data until it shows
+# the requested state, or until a measurement taken COMMAND_SETTLE_TIME seconds after
+# the command still shows the old one. The EVC uploads data only every ~5 minutes
+# (2026-10-19: ECO reported Failed, active after ~2 min, visible in the cloud after
+# ~5 min), so a check right after the command proves nothing.
+COMMAND_SETTLE_TIME = 90          # s after sending before EVC data counts as evidence
+COMMAND_VERIFY_INTERVAL = 60      # s between realtime refreshes while verifying
+COMMAND_VERIFY_TIMEOUT = 720      # s — give up waiting for new EVC data (≈ 2 uploads)
 # One notification for command problems — a newer one replaces the older
 COMMAND_NOTIFICATION_ID = f"{DOMAIN}_command_failed"
 

@@ -314,8 +314,13 @@ Commands go through a two-phase delivery:
    still Pending / poll error → poll again after COMMAND_POLL_RETRY_DELAYS (10 s, 20 s)
 4. Success/Delivered → done, an older command notification is dismissed
 5. Failed or never confirmed → if the command has an expected state
-   (work mode: deviceWorkingMode), wait COMMAND_VERIFY_DELAY (20 s), refresh the
-   realtime data and compare. Matches → warning in the log only.
+   (work mode: deviceWorkingMode), refresh the realtime data every
+   COMMAND_VERIFY_INTERVAL (60 s) for up to COMMAND_VERIFY_TIMEOUT (12 min):
+   - data shows the expected state → warning in the log only, done
+   - data measured ≥ COMMAND_SETTLE_TIME (90 s) after the command (dataTime)
+     still shows another state → report (step 6)
+   - no such data within the timeout → report as "not verified"
+   A newer command ends the tracking of an older one silently.
 6. Otherwise: ERROR log with all details + one persistent notification
    (fixed id, a newer one replaces the older) in German or English
    (command_feedback.py): command, time sent, cloud result incl. extra result
@@ -328,6 +333,13 @@ after a "Work Mode → ECO" command, although the EVC switched to ECO and starte
 charging at the same moment. A second ECO command right after the vehicle reached
 100 % (EVC status Finishing) was reported as failed as well — correctly, nothing
 could be charged. Only the second case deserves a notification.
+
+**Why wait for settled data:** The EVC uploads realtime data only about every
+5 minutes. On 2026-10-19 an ECO command (12:25:21) was reported as failed, the car
+started charging at 12:27 and the cloud showed ECO with the upload of 12:30:06. A
+check 20 s after the command (releases 1.4.0/1.4.1) still saw the old mode and
+raised a false alarm. The work-mode select keeps its optimistic value by the same
+rule, so a skipped poll or an old upload no longer flips it back.
 
 **Why `asyncio.sleep` instead of `hass.async_call_later`:**  
 `hass.loop.call_later` does not exist in modern HA. `hass.async_call_later` requires
